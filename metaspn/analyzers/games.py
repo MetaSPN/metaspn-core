@@ -1,10 +1,10 @@
-"""Game analyzer for MetaSPN."""
+"""Game analyzer for MetaSPN using ML classification."""
 
-import re
 from typing import TYPE_CHECKING, Optional
 
+from founder_game_classifier import GameClassifier
+
 from metaspn.core.metrics import GameSignature
-from metaspn.utils.stats import clamp
 
 if TYPE_CHECKING:
     from metaspn.core.profile import Activity
@@ -13,149 +13,37 @@ if TYPE_CHECKING:
 class GameAnalyzer:
     """Analyzer for classifying content into the six games framework.
 
-    The Six Games:
-        G1 (Identity/Canon): Foundational content that defines who you are
-        G2 (Idea Mining): Exploration and discovery of new concepts
-        G3 (Models): Framework and system building
-        G4 (Performance): Entertainment and engagement
-        G5 (Meaning): Deep insight and wisdom sharing
-        G6 (Network): Connection and community building
+    Uses a trained ML model (sentence-transformers + logistic regression) to
+    classify content into six founder games.
 
-    Classification is based on content analysis, keywords, and patterns.
+    The Six Games:
+        G1 (Identity/Canon): Recruiting into identity, lineage, belonging, status
+        G2 (Ideas/Play Mining): Extracting reusable tactics, heuristics
+        G3 (Models/Understanding): Building mental models, frameworks, explanations
+        G4 (Performance/Competition): Winning, execution, metrics, zero-sum edges
+        G5 (Meaning/Therapy): Healing, values, emotional processing, transformation
+        G6 (Network/Coordination): Community building, protocols, collective action
+
+    The classifier model is downloaded from Hugging Face Hub on first use
+    and cached locally (~100MB).
     """
 
-    # Keywords and patterns associated with each game
-    GAME_KEYWORDS = {
-        "G1": [
-            "story",
-            "journey",
-            "origin",
-            "biography",
-            "identity",
-            "mission",
-            "values",
-            "philosophy",
-            "manifesto",
-            "beliefs",
-            "principles",
-            "who i am",
-            "my story",
-            "about me",
-            "foundation",
-            "core",
-        ],
-        "G2": [
-            "discover",
-            "explore",
-            "research",
-            "analysis",
-            "study",
-            "investigate",
-            "curious",
-            "question",
-            "hypothesis",
-            "experiment",
-            "findings",
-            "learn",
-            "insight",
-            "observation",
-            "trend",
-            "pattern",
-            "data",
-        ],
-        "G3": [
-            "framework",
-            "model",
-            "system",
-            "method",
-            "process",
-            "template",
-            "structure",
-            "blueprint",
-            "guide",
-            "tutorial",
-            "how to",
-            "step by step",
-            "architecture",
-            "design",
-            "strategy",
-            "approach",
-            "methodology",
-        ],
-        "G4": [
-            "fun",
-            "entertainment",
-            "story",
-            "narrative",
-            "drama",
-            "humor",
-            "engaging",
-            "exciting",
-            "adventure",
-            "experience",
-            "show",
-            "episode",
-            "performance",
-            "creative",
-            "artistic",
-            "visual",
-            "audio",
-        ],
-        "G5": [
-            "meaning",
-            "purpose",
-            "wisdom",
-            "insight",
-            "truth",
-            "philosophy",
-            "reflection",
-            "contemplation",
-            "lesson",
-            "principle",
-            "value",
-            "understanding",
-            "depth",
-            "profound",
-            "essence",
-            "significance",
-        ],
-        "G6": [
-            "community",
-            "network",
-            "connect",
-            "collaborate",
-            "together",
-            "conversation",
-            "discussion",
-            "interview",
-            "guest",
-            "partnership",
-            "relationship",
-            "social",
-            "group",
-            "collective",
-            "shared",
-        ],
-    }
+    def __init__(
+        self,
+        model_name: str = "leoguinan/founder-game-classifier",
+    ) -> None:
+        """Initialize game analyzer with ML classifier.
 
-    # Content type associations
-    CONTENT_TYPE_WEIGHTS = {
-        "podcast": {"G4": 0.3, "G6": 0.2, "G5": 0.2},
-        "youtube": {"G4": 0.4, "G3": 0.2},
-        "twitter": {"G6": 0.3, "G2": 0.2},
-        "blog": {"G3": 0.3, "G5": 0.3, "G2": 0.2},
-    }
-
-    def __init__(self) -> None:
-        """Initialize game analyzer."""
-        # Compile regex patterns for efficiency
-        self._keyword_patterns = {
-            game: [re.compile(rf"\b{kw}\b", re.IGNORECASE) for kw in keywords]
-            for game, keywords in self.GAME_KEYWORDS.items()
-        }
+        Args:
+            model_name: Hugging Face model identifier or local path
+        """
+        self._classifier = GameClassifier.from_pretrained(model_name)
 
     def compute(self, activities: list["Activity"]) -> GameSignature:
-        """Compute game signature from activities.
+        """Compute aggregate game signature from activities.
+
+        Uses batch classification for efficiency, then averages the
+        probability distributions across all activities.
 
         Args:
             activities: List of activities to analyze
@@ -166,27 +54,26 @@ class GameAnalyzer:
         if not activities:
             return GameSignature()
 
-        # Aggregate scores across all activities
-        game_scores = {"G1": 0.0, "G2": 0.0, "G3": 0.0, "G4": 0.0, "G5": 0.0, "G6": 0.0}
-
+        # Extract text from activities
+        texts = []
         for activity in activities:
-            activity_scores = self._analyze_activity(activity)
-            for game, score in activity_scores.items():
-                game_scores[game] += score
+            text = self._get_text(activity)
+            if text:
+                texts.append(text)
 
-        # Normalize to 0-1 range
-        total = sum(game_scores.values())
-        if total > 0:
-            for game in game_scores:
-                game_scores[game] = game_scores[game] / total
+        if not texts:
+            return GameSignature()
+
+        # Use ML model's aggregate signature method
+        probs = self._classifier.get_game_signature(texts)
 
         return GameSignature(
-            G1=clamp(game_scores["G1"], 0.0, 1.0),
-            G2=clamp(game_scores["G2"], 0.0, 1.0),
-            G3=clamp(game_scores["G3"], 0.0, 1.0),
-            G4=clamp(game_scores["G4"], 0.0, 1.0),
-            G5=clamp(game_scores["G5"], 0.0, 1.0),
-            G6=clamp(game_scores["G6"], 0.0, 1.0),
+            G1=probs.get("G1", 0.0),
+            G2=probs.get("G2", 0.0),
+            G3=probs.get("G3", 0.0),
+            G4=probs.get("G4", 0.0),
+            G5=probs.get("G5", 0.0),
+            G6=probs.get("G6", 0.0),
         )
 
     def compute_for_activity(self, activity: "Activity") -> GameSignature:
@@ -198,66 +85,39 @@ class GameAnalyzer:
         Returns:
             GameSignature for this activity
         """
-        scores = self._analyze_activity(activity)
-        total = sum(scores.values())
+        text = self._get_text(activity)
+        if not text:
+            return GameSignature()
 
-        if total > 0:
-            for game in scores:
-                scores[game] = scores[game] / total
+        result = self._classifier.predict(text)
+        probs = result["probabilities"]
 
         return GameSignature(
-            G1=clamp(scores["G1"], 0.0, 1.0),
-            G2=clamp(scores["G2"], 0.0, 1.0),
-            G3=clamp(scores["G3"], 0.0, 1.0),
-            G4=clamp(scores["G4"], 0.0, 1.0),
-            G5=clamp(scores["G5"], 0.0, 1.0),
-            G6=clamp(scores["G6"], 0.0, 1.0),
+            G1=probs.get("G1", 0.0),
+            G2=probs.get("G2", 0.0),
+            G3=probs.get("G3", 0.0),
+            G4=probs.get("G4", 0.0),
+            G5=probs.get("G5", 0.0),
+            G6=probs.get("G6", 0.0),
         )
 
-    def _analyze_activity(self, activity: "Activity") -> dict[str, float]:
-        """Analyze a single activity for game signals.
+    def _get_text(self, activity: "Activity") -> str:
+        """Extract text content from an activity.
 
-        Returns raw scores (not normalized).
+        Combines title and content into a single string for classification.
+
+        Args:
+            activity: Activity to extract text from
+
+        Returns:
+            Combined text string
         """
-        scores = {"G1": 0.0, "G2": 0.0, "G3": 0.0, "G4": 0.0, "G5": 0.0, "G6": 0.0}
-
-        # Analyze text content
-        text_to_analyze = ""
+        parts = []
         if activity.title:
-            text_to_analyze += activity.title + " "
+            parts.append(activity.title)
         if activity.content:
-            text_to_analyze += activity.content
-
-        if text_to_analyze:
-            keyword_scores = self._analyze_keywords(text_to_analyze)
-            for game, score in keyword_scores.items():
-                scores[game] += score
-
-        # Add platform-based weights
-        platform_weights = self.CONTENT_TYPE_WEIGHTS.get(activity.platform, {})
-        for game, weight in platform_weights.items():
-            scores[game] += weight
-
-        # Analyze existing game signature if present
-        if activity.game_signature:
-            for game in scores:
-                if game in activity.game_signature:
-                    scores[game] += activity.game_signature[game] * 2  # Weight existing data higher
-
-        return scores
-
-    def _analyze_keywords(self, text: str) -> dict[str, float]:
-        """Analyze text for game-related keywords."""
-        scores = {"G1": 0.0, "G2": 0.0, "G3": 0.0, "G4": 0.0, "G5": 0.0, "G6": 0.0}
-
-        text_lower = text.lower()
-
-        for game, patterns in self._keyword_patterns.items():
-            for pattern in patterns:
-                matches = pattern.findall(text_lower)
-                scores[game] += len(matches) * 0.1
-
-        return scores
+            parts.append(activity.content)
+        return " ".join(parts).strip()
 
     def get_primary_game(self, activities: list["Activity"]) -> Optional[str]:
         """Get the primary (highest scoring) game.
@@ -266,7 +126,7 @@ class GameAnalyzer:
             activities: List of activities
 
         Returns:
-            Primary game identifier or None
+            Primary game identifier (G1-G6) or None
         """
         signature = self.compute(activities)
         return signature.primary_game
@@ -298,21 +158,45 @@ class GameAnalyzer:
             activity: Activity to classify
 
         Returns:
-            Classification string
+            Classification string describing the content type
         """
-        signature = self.compute_for_activity(activity)
-        primary = signature.primary_game
+        text = self._get_text(activity)
+        if not text:
+            return "general"
+
+        result = self._classifier.predict(text)
+        primary = result.get("primary_game")
 
         if primary is None:
             return "general"
 
         type_names = {
-            "G1": "foundational",
-            "G2": "exploratory",
-            "G3": "instructional",
-            "G4": "entertaining",
-            "G5": "insightful",
-            "G6": "connective",
+            "G1": "identity",
+            "G2": "tactical",
+            "G3": "framework",
+            "G4": "competitive",
+            "G5": "transformative",
+            "G6": "community",
         }
 
         return type_names.get(primary, "general")
+
+    def predict_with_confidence(self, activity: "Activity") -> dict:
+        """Get full prediction with confidence scores.
+
+        Args:
+            activity: Activity to analyze
+
+        Returns:
+            Dictionary with primary/secondary games, confidence, and descriptions
+        """
+        text = self._get_text(activity)
+        if not text:
+            return {
+                "primary_game": None,
+                "secondary_game": None,
+                "confidence": 0.0,
+                "probabilities": {},
+            }
+
+        return self._classifier.predict(text)

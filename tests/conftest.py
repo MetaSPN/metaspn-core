@@ -16,10 +16,9 @@ from metaspn.core.metrics import (
     CreatorMetrics,
     DevelopmentMetrics,
     GameSignature,
-    ProfileMetrics,
     Trajectory,
 )
-from metaspn.core.profile import Activity, PlatformPresence, UserProfile
+from metaspn.core.profile import Activity, PlatformPresence, ProfileMetrics, UserProfile
 from metaspn.core.state_machine import LifecycleState
 from metaspn.repo import init_repo
 
