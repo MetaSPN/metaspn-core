@@ -1,5 +1,15 @@
-"""Repository module - manage repository structure and data I/O."""
+"""Repository module - manage repository structure and data I/O.
 
+Data Lake Architecture:
+    sources/      - External inputs (consumed content)
+    artifacts/    - Your outputs (created content)
+    enhancements/ - Computed layers with history
+    indexes/      - Fast lookup indexes (manifest)
+"""
+
+from metaspn.repo.enhancement_store import EnhancedActivity, EnhancementStore
+from metaspn.repo.loader import ActivityLoader, query_activities, stream_activities
+from metaspn.repo.manifest import Manifest, ManifestManager, build_manifest, load_manifest
 from metaspn.repo.reader import (
     MinimalState,
     RepoReader,
@@ -27,4 +37,16 @@ __all__ = [
     "save_activity",
     "add_activity",
     "cache_profile",
+    # Enhancement Store
+    "EnhancementStore",
+    "EnhancedActivity",
+    # Manifest/Indexing
+    "Manifest",
+    "ManifestManager",
+    "build_manifest",
+    "load_manifest",
+    # Loader
+    "ActivityLoader",
+    "query_activities",
+    "stream_activities",
 ]

@@ -3,13 +3,34 @@
 The EnhancementStore provides a unified interface for reading, writing,
 and joining enhancement layers with source activities. It maintains
 the separation between raw source data and computed enhancements.
+
+Enhancement History Architecture:
+    artifacts/enhancements/
+    ├── quality_scores/
+    │   ├── latest.jsonl           # Current scores
+    │   └── history/
+    │       └── 2024-01-28_v1.0.jsonl
+    ├── game_signatures/
+    │   ├── latest.jsonl
+    │   └── history/
+    └── embeddings/
+        ├── latest.jsonl
+        └── history/
+
+When algorithm versions change, the current latest.jsonl is archived
+to history/ before being overwritten. This provides a full audit trail.
 """
 
 import json
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from metaspn.core.enhancements import (
+    EMBEDDING_ALGORITHM_VERSION,
+    GAME_SIGNATURE_ALGORITHM_VERSION,
+    QUALITY_ALGORITHM_VERSION,
     EmbeddingEnhancement,
     GameSignatureEnhancement,
     QualityScoreEnhancement,
@@ -322,6 +343,236 @@ class EnhancementStore:
             for path in paths.values():
                 if path.exists():
                     path.unlink()
+
+    # =========================================================================
+    # History Methods
+    # =========================================================================
+
+    def save_with_history(
+        self,
+        enhancement_type: str,
+        records: list,
+        archive_reason: str = "algorithm_update",
+    ) -> Path:
+        """Save enhancements while archiving the current version to history.
+
+        Archives the current latest.jsonl to history/ before overwriting.
+        Use this when algorithm versions change to preserve audit trail.
+
+        Args:
+            enhancement_type: Type (quality_scores, game_signatures, embeddings)
+            records: List of enhancement records to save
+            archive_reason: Reason for archiving (for filename)
+
+        Returns:
+            Path to the new latest file
+        """
+        latest_path = self.structure.get_enhancement_latest_path(enhancement_type)
+        history_dir = self.structure.get_enhancement_history_dir(enhancement_type)
+
+        # Archive current if it exists
+        if latest_path.exists():
+            self._archive_enhancement(latest_path, history_dir, archive_reason)
+
+        # Save new records
+        if enhancement_type == "quality_scores":
+            return self.save_quality_scores(records, append=False)
+        elif enhancement_type == "game_signatures":
+            return self.save_game_signatures(records, append=False)
+        elif enhancement_type == "embeddings":
+            return self.save_embeddings(records, append=False)
+        else:
+            raise ValueError(f"Unknown enhancement type: {enhancement_type}")
+
+    def _archive_enhancement(
+        self,
+        source_path: Path,
+        history_dir: Path,
+        reason: str,
+    ) -> Path:
+        """Archive an enhancement file to history directory.
+
+        Args:
+            source_path: Path to current latest.jsonl
+            history_dir: Path to history directory
+            reason: Reason for archiving
+
+        Returns:
+            Path to archived file
+        """
+        history_dir.mkdir(parents=True, exist_ok=True)
+
+        # Determine algorithm version from first record
+        version = "unknown"
+        try:
+            with open(source_path) as f:
+                first_line = f.readline().strip()
+                if first_line:
+                    data = json.loads(first_line)
+                    version = data.get("algorithm_version", "unknown")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+        # Generate archive filename: YYYY-MM-DD_vX.X_reason.jsonl
+        timestamp = datetime.now().strftime("%Y-%m-%d")
+        archive_name = f"{timestamp}_v{version}_{reason}.jsonl"
+        archive_path = history_dir / archive_name
+
+        # Handle duplicate filenames
+        counter = 1
+        while archive_path.exists():
+            archive_name = f"{timestamp}_v{version}_{reason}_{counter}.jsonl"
+            archive_path = history_dir / archive_name
+            counter += 1
+
+        # Copy to archive
+        shutil.copy2(source_path, archive_path)
+
+        return archive_path
+
+    def list_history(self, enhancement_type: str) -> list[Path]:
+        """List all historical enhancement files.
+
+        Args:
+            enhancement_type: Type (quality_scores, game_signatures, embeddings)
+
+        Returns:
+            List of historical file paths, sorted by date (newest first)
+        """
+        history_dir = self.structure.get_enhancement_history_dir(enhancement_type)
+
+        if not history_dir.exists():
+            return []
+
+        files = list(history_dir.glob("*.jsonl"))
+        return sorted(files, reverse=True)
+
+    def load_historical(
+        self,
+        enhancement_type: str,
+        history_file: str,
+    ) -> dict:
+        """Load a specific historical enhancement file.
+
+        Args:
+            enhancement_type: Type (quality_scores, game_signatures, embeddings)
+            history_file: Name of the history file (e.g., "2024-01-28_v1.0.jsonl")
+
+        Returns:
+            Dictionary mapping activity_id to enhancement
+        """
+        history_dir = self.structure.get_enhancement_history_dir(enhancement_type)
+        file_path = history_dir / history_file
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"History file not found: {file_path}")
+
+        # Determine class based on enhancement type
+        cls_map = {
+            "quality_scores": QualityScoreEnhancement,
+            "game_signatures": GameSignatureEnhancement,
+            "embeddings": EmbeddingEnhancement,
+        }
+        cls = cls_map.get(enhancement_type)
+        if not cls:
+            raise ValueError(f"Unknown enhancement type: {enhancement_type}")
+
+        return self._load_enhancements(file_path, cls)
+
+    def get_enhancement_timeline(
+        self,
+        activity_id: str,
+        enhancement_type: str,
+    ) -> list[dict]:
+        """Get the enhancement history for a specific activity.
+
+        Returns all recorded scores/signatures for an activity across
+        all historical versions, enabling analysis of how scores evolved.
+
+        Args:
+            activity_id: The activity to look up
+            enhancement_type: Type (quality_scores, game_signatures, embeddings)
+
+        Returns:
+            List of enhancements with metadata, sorted by computed_at
+        """
+        timeline = []
+
+        # Check current latest
+        latest_path = self.structure.get_enhancement_latest_path(enhancement_type)
+        if latest_path.exists():
+            enhancements = self._load_enhancement_file_raw(latest_path)
+            for enh in enhancements:
+                if enh.get("activity_id") == activity_id:
+                    enh["_source"] = "latest"
+                    timeline.append(enh)
+
+        # Check history
+        history_files = self.list_history(enhancement_type)
+        for history_file in history_files:
+            enhancements = self._load_enhancement_file_raw(history_file)
+            for enh in enhancements:
+                if enh.get("activity_id") == activity_id:
+                    enh["_source"] = history_file.name
+                    timeline.append(enh)
+
+        # Sort by computed_at
+        timeline.sort(key=lambda x: x.get("computed_at", ""), reverse=True)
+
+        return timeline
+
+    def _load_enhancement_file_raw(self, path: Path) -> list[dict]:
+        """Load enhancement file as raw dictionaries."""
+        records = []
+        if not path.exists():
+            return records
+
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+        return records
+
+    def get_current_algorithm_versions(self) -> dict[str, str]:
+        """Get current algorithm versions for all enhancement types."""
+        return {
+            "quality_scores": QUALITY_ALGORITHM_VERSION,
+            "game_signatures": GAME_SIGNATURE_ALGORITHM_VERSION,
+            "embeddings": EMBEDDING_ALGORITHM_VERSION,
+        }
+
+    def needs_recompute(self, enhancement_type: str) -> bool:
+        """Check if enhancements need recomputation due to algorithm change.
+
+        Args:
+            enhancement_type: Type (quality_scores, game_signatures, embeddings)
+
+        Returns:
+            True if current algorithm version differs from stored version
+        """
+        latest_path = self.structure.get_enhancement_latest_path(enhancement_type)
+        if not latest_path.exists():
+            return True
+
+        # Get version from first record
+        try:
+            with open(latest_path) as f:
+                first_line = f.readline().strip()
+                if first_line:
+                    data = json.loads(first_line)
+                    stored_version = data.get("algorithm_version", "0.0")
+                    current_version = self.get_current_algorithm_versions()[enhancement_type]
+                    return stored_version != current_version
+        except (json.JSONDecodeError, OSError, KeyError):
+            return True
+
+        return False
 
 
 class EnhancedActivity:

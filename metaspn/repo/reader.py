@@ -1,10 +1,28 @@
-"""Repository reader for MetaSPN."""
+"""Repository reader for MetaSPN.
+
+Canonical Activity Format:
+    All activities should be stored in this format:
+    {
+        "activity_id": "platform_uniqueid",
+        "timestamp": "2024-01-28T12:00:00Z",
+        "platform": "twitter",
+        "activity_type": "create",  # or "consume"
+        "title": "Optional title",
+        "content": "The actual content",
+        "url": "https://...",
+        "duration_seconds": 3600,  # optional
+        "raw_data": {}  # platform-specific data
+    }
+
+Legacy formats are still supported for backward compatibility
+but should be migrated to canonical format.
+"""
 
 import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 from metaspn.repo.structure import RepoStructure
 
@@ -14,11 +32,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class MinimalState:
-    """Minimal state loaded from repository.
-
-    Contains just enough information to check cache validity
-    and identify the user.
-    """
+    """Minimal state loaded from repository."""
 
     user_id: str
     name: str
@@ -42,7 +56,7 @@ class MinimalState:
 class RepoReader:
     """Reader for MetaSPN repository data.
 
-    Handles reading activities from sources and artifacts,
+    Reads activities from sources (consumed content) and artifacts (created content),
     as well as loading cached profile data.
     """
 
@@ -94,54 +108,32 @@ class RepoReader:
             created_at=created_at,
         )
 
-    def load_activities(self, platform: Optional[str] = None) -> list["Activity"]:
+    def load_activities(
+        self,
+        platform: Optional[str] = None,
+        activity_type: Optional[Literal["create", "consume"]] = None,
+    ) -> list["Activity"]:
         """Load activities from repository.
 
-        Supports both JSON and JSONL files, and both standard and legacy formats.
+        Supports both JSON and JSONL files. Canonical format is preferred,
+        but legacy formats are supported for backward compatibility.
 
         Args:
             platform: Optional platform to filter by
+            activity_type: Optional activity type filter ("create" or "consume")
 
         Returns:
-            List of Activity objects
+            List of Activity objects sorted by timestamp
         """
-
         activities = []
 
         # Get activity files
-        files = self.structure.get_activity_files(platform)
+        files = self.structure.get_activity_files(platform, activity_type)
 
         for file_path in files:
             try:
-                if file_path.suffix == ".jsonl":
-                    # JSONL format - one JSON object per line
-                    with open(file_path) as f:
-                        for line in f:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            try:
-                                data = json.loads(line)
-                                activity = self._parse_activity(data, file_path)
-                                if activity:
-                                    activities.append(activity)
-                            except (json.JSONDecodeError, KeyError, ValueError):
-                                continue
-                else:
-                    # Standard JSON format
-                    with open(file_path) as f:
-                        data = json.load(f)
-
-                    # Handle both single activity and list of activities
-                    if isinstance(data, list):
-                        for item in data:
-                            activity = self._parse_activity(item, file_path)
-                            if activity:
-                                activities.append(activity)
-                    else:
-                        activity = self._parse_activity(data, file_path)
-                        if activity:
-                            activities.append(activity)
+                file_activities = self._load_file(file_path)
+                activities.extend(file_activities)
             except (json.JSONDecodeError, KeyError, ValueError, OSError):
                 # Skip malformed files
                 continue
@@ -151,29 +143,84 @@ class RepoReader:
 
         return activities
 
+    def _load_file(self, file_path: Path) -> list["Activity"]:
+        """Load activities from a single file."""
+        activities = []
+
+        if file_path.suffix == ".jsonl":
+            # JSONL format - one JSON object per line
+            with open(file_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        activity = self._parse_activity(data, file_path)
+                        if activity:
+                            activities.append(activity)
+                    except (json.JSONDecodeError, KeyError, ValueError):
+                        continue
+        else:
+            # Standard JSON format
+            with open(file_path) as f:
+                data = json.load(f)
+
+            # Handle both single activity and list of activities
+            if isinstance(data, list):
+                for item in data:
+                    activity = self._parse_activity(item, file_path)
+                    if activity:
+                        activities.append(activity)
+            else:
+                activity = self._parse_activity(data, file_path)
+                if activity:
+                    activities.append(activity)
+
+        return activities
+
     def _parse_activity(self, data: dict, file_path: Path) -> Optional["Activity"]:
-        """Parse activity from data, handling both standard and legacy formats."""
+        """Parse activity from data.
+
+        Tries canonical format first, then falls back to legacy formats.
+        """
         from metaspn.core.profile import Activity
 
-        # Determine if this is legacy format by checking for nested structures
-        if "episode" in data and "listening" not in data:
-            # Legacy created podcast episode
-            return self._parse_legacy_podcast_episode(data)
-        elif "listening" in data:
-            # Legacy podcast listening event
-            return self._parse_legacy_listening_event(data)
-        elif "post" in data:
-            # Legacy blog post
-            return self._parse_legacy_blog_post(data)
-        elif "reading" in data or "source_type" in data and data.get("source_type") == "blog":
-            # Legacy blog reading event
-            return self._parse_legacy_reading_event(data)
-        else:
-            # Standard format
+        # Check for canonical format (has activity_id, platform, activity_type)
+        if self._is_canonical_format(data):
             try:
                 return Activity.from_dict(data)
             except (KeyError, ValueError):
                 return None
+
+        # Fall back to legacy format parsing
+        return self._parse_legacy_activity(data, file_path)
+
+    def _is_canonical_format(self, data: dict) -> bool:
+        """Check if data is in canonical Activity format."""
+        required_fields = ["timestamp", "platform", "activity_type"]
+        return all(field in data for field in required_fields)
+
+    def _parse_legacy_activity(self, data: dict, file_path: Path) -> Optional["Activity"]:
+        """Parse legacy activity formats for backward compatibility."""
+        # Detect format by checking for nested structures
+        if "tweet" in data:
+            return self._parse_legacy_tweet(data)
+        elif "episode" in data and "listening" not in data:
+            return self._parse_legacy_podcast_episode(data)
+        elif "listening" in data:
+            return self._parse_legacy_listening_event(data)
+        elif "post" in data:
+            return self._parse_legacy_blog_post(data)
+        elif "reading" in data or ("source_type" in data and data.get("source_type") == "blog"):
+            return self._parse_legacy_reading_event(data)
+        else:
+            # Unknown format
+            return None
+
+    # =========================================================================
+    # Legacy Format Parsers (for backward compatibility)
+    # =========================================================================
 
     def _parse_legacy_podcast_episode(self, data: dict) -> Optional["Activity"]:
         """Parse legacy podcast episode format."""
@@ -305,6 +352,69 @@ class RepoReader:
             },
         )
 
+    def _parse_legacy_tweet(self, data: dict) -> Optional["Activity"]:
+        """Parse legacy tweet format.
+
+        Format:
+        {
+            "id": "...",
+            "timestamp": "2020-11-12T17:02:26Z",
+            "username": "...",
+            "tweet": {
+                "id": "...",
+                "text": "...",
+                "url": "...",
+                "created_at": "...",
+                "type": "original"
+            },
+            "metrics": {"likes": 0, "retweets": 0, "replies": 0},
+            "analysis": {"game_signature": {...}}
+        }
+        """
+        from metaspn.core.profile import Activity
+
+        tweet = data.get("tweet", {})
+        timestamp_str = data.get("timestamp") or tweet.get("created_at")
+
+        if not timestamp_str:
+            return None
+
+        try:
+            timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return None
+
+        # Get tweet text as content
+        content = tweet.get("text", "")
+
+        # Get metrics
+        metrics = data.get("metrics", {})
+
+        # Get any pre-computed analysis
+        analysis = data.get("analysis", {})
+
+        return Activity(
+            timestamp=timestamp,
+            platform="twitter",
+            activity_type="create",
+            title=None,  # Tweets don't have titles
+            content=content,
+            url=tweet.get("url"),
+            duration_seconds=None,
+            quality_score=None,
+            game_signature=analysis.get("game_signature"),
+            raw_data={
+                "tweet_id": data.get("id") or tweet.get("id"),
+                "username": data.get("username"),
+                "author_id": data.get("author_id"),
+                "tweet_type": tweet.get("type"),
+                "likes": metrics.get("likes", 0),
+                "retweets": metrics.get("retweets", 0),
+                "replies": metrics.get("replies", 0),
+            },
+            activity_id=f"twitter_{data.get('id') or tweet.get('id')}",
+        )
+
     def load_cached_profile(self, commit: Optional[str] = None) -> Optional["UserProfile"]:
         """Load cached profile if available and valid.
 
@@ -406,15 +516,17 @@ def load_minimal_state(repo_path: str) -> MinimalState:
 def load_activities(
     repo_path: str,
     platform: Optional[str] = None,
+    activity_type: Optional[Literal["create", "consume"]] = None,
 ) -> list["Activity"]:
     """Load activities from repository.
 
-    Loads all activities from sources/ and artifacts/ directories,
-    optionally filtered by platform.
+    Loads activities from sources/ (consumed content) and artifacts/ (created content),
+    optionally filtered by platform and activity type.
 
     Args:
         repo_path: Path to MetaSPN repository
         platform: Optional platform to filter by
+        activity_type: Optional activity type ("create" for your outputs, "consume" for inputs)
 
     Returns:
         List of Activity objects sorted by timestamp
@@ -423,10 +535,14 @@ def load_activities(
         >>> activities = load_activities("./my-content")
         >>> print(f"Total activities: {len(activities)}")
 
-        >>> podcast_activities = load_activities("./my-content", "podcast")
+        >>> # Load only your tweets
+        >>> my_tweets = load_activities("./my-content", "twitter", "create")
+
+        >>> # Load podcasts you listened to
+        >>> listened = load_activities("./my-content", "podcast", "consume")
     """
     reader = RepoReader(repo_path)
-    return reader.load_activities(platform)
+    return reader.load_activities(platform, activity_type)
 
 
 def try_load_cached_profile(

@@ -3,7 +3,7 @@
 import json
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional, TypedDict
 
 import click
 
@@ -357,6 +357,444 @@ def validate(path: str) -> None:
         raise SystemExit(1)
 
 
+@cli.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--fix", is_flag=True, help="Attempt to fix minor issues")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed error information")
+def check(path: str, fix: bool, as_json: bool, verbose: bool) -> None:
+    """Check if repository is ready for scoring.
+
+    Performs comprehensive validation of repository content to ensure
+    it meets all requirements for proper profile scoring.
+
+    Checks:
+    - Repository structure exists
+    - Activities have required fields (activity_id, timestamp, platform, activity_type)
+    - Activity IDs are unique and properly formatted
+    - Timestamps are valid ISO 8601 format
+    - Content is present for quality scoring
+    - Activities are in correct locations (sources vs artifacts)
+
+    Example:
+        metaspn check ./my-content
+        metaspn check ./my-content --verbose
+        metaspn check ./my-content --fix
+    """
+
+    try:
+        results = _check_repository(path, fix=fix, verbose=verbose)
+
+        if as_json:
+            click.echo(json.dumps(results, indent=2, default=str))
+            if not results["ready_for_scoring"]:
+                raise SystemExit(1)
+            return
+
+        # Display results
+        click.echo(f"\nRepository Check: {path}")
+        click.echo("=" * 60)
+
+        # Structure check
+        _display_check_section("Structure", results["structure"])
+
+        # Activities check
+        _display_check_section("Activities", results["activities"])
+
+        # Content check
+        _display_check_section("Content Quality", results["content"])
+
+        # Location check
+        _display_check_section("File Locations", results["locations"])
+
+        # Summary
+        click.echo("\n" + "=" * 60)
+        total_errors = results["summary"]["errors"]
+        total_warnings = results["summary"]["warnings"]
+
+        if results["ready_for_scoring"]:
+            click.echo(click.style("READY FOR SCORING", fg="green", bold=True))
+            if total_warnings > 0:
+                click.echo(
+                    f"  {total_warnings} warning(s) - scoring will work but may have reduced accuracy"
+                )
+        else:
+            click.echo(click.style("NOT READY FOR SCORING", fg="red", bold=True))
+            click.echo(f"  {total_errors} error(s) must be fixed")
+            if total_warnings > 0:
+                click.echo(f"  {total_warnings} warning(s)")
+
+        click.echo(f"\nTotal activities: {results['summary']['total_activities']}")
+        click.echo(f"  Valid: {results['summary']['valid_activities']}")
+        click.echo(f"  With content: {results['summary']['activities_with_content']}")
+
+        if verbose and results["issues"]:
+            click.echo("\n--- Detailed Issues ---")
+            for issue in results["issues"][:20]:  # Limit to first 20
+                level = "ERROR" if issue["level"] == "error" else "WARN"
+                click.echo(f"[{level}] {issue['message']}")
+                if issue.get("activity_id"):
+                    click.echo(f"        Activity: {issue['activity_id']}")
+            if len(results["issues"]) > 20:
+                click.echo(f"... and {len(results['issues']) - 20} more issues")
+
+        if not results["ready_for_scoring"]:
+            raise SystemExit(1)
+
+    except SystemExit:
+        raise
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
+
+
+class CheckSection(TypedDict):
+    """Check section result."""
+
+    passed: bool
+    errors: list[str]
+    warnings: list[str]
+
+
+class CheckSummary(TypedDict):
+    """Check summary statistics."""
+
+    errors: int
+    warnings: int
+    total_activities: int
+    valid_activities: int
+    activities_with_content: int
+
+
+class CheckIssue(TypedDict):
+    """Individual check issue."""
+
+    level: str
+    message: str
+    activity_id: Optional[str]
+    field: Optional[str]
+
+
+class CheckResults(TypedDict):
+    """Complete check results."""
+
+    ready_for_scoring: bool
+    structure: CheckSection
+    activities: CheckSection
+    content: CheckSection
+    locations: CheckSection
+    summary: CheckSummary
+    issues: list[CheckIssue]
+
+
+def _check_repository(path: str, fix: bool = False, verbose: bool = False) -> CheckResults:
+    """Perform comprehensive repository check."""
+    from metaspn.repo.reader import RepoReader
+    from metaspn.repo.structure import RepoStructure, validate_repo
+
+    results: CheckResults = {
+        "ready_for_scoring": True,
+        "structure": {"passed": False, "errors": [], "warnings": []},
+        "activities": {"passed": False, "errors": [], "warnings": []},
+        "content": {"passed": False, "errors": [], "warnings": []},
+        "locations": {"passed": False, "errors": [], "warnings": []},
+        "summary": {
+            "errors": 0,
+            "warnings": 0,
+            "total_activities": 0,
+            "valid_activities": 0,
+            "activities_with_content": 0,
+        },
+        "issues": [],
+    }
+
+    # 1. Structure check
+    if not validate_repo(path):
+        results["structure"]["errors"].append("Invalid repository structure")
+        results["ready_for_scoring"] = False
+    else:
+        results["structure"]["passed"] = True
+
+        structure = RepoStructure(path)
+
+        # Check for profile
+        if not structure.profile_path.exists():
+            results["structure"]["errors"].append("Missing profile.json")
+            results["ready_for_scoring"] = False
+
+    if not results["structure"]["passed"]:
+        # Can't continue without valid structure
+        results["summary"]["errors"] = len(results["structure"]["errors"])
+        return results
+
+    # 2. Load and check activities
+    try:
+        reader = RepoReader(path)
+        activities = reader.load_activities()
+    except Exception as e:
+        results["activities"]["errors"].append(f"Failed to load activities: {e}")
+        results["ready_for_scoring"] = False
+        results["summary"]["errors"] = 1
+        return results
+
+    results["summary"]["total_activities"] = len(activities)
+
+    if len(activities) == 0:
+        results["activities"]["warnings"].append("No activities found - nothing to score")
+        results["activities"]["passed"] = True  # Not an error, just empty
+    else:
+        # Check each activity
+        seen_ids: set[str] = set()
+        valid_count = 0
+        content_count = 0
+
+        for activity in activities:
+            activity_issues = _check_activity(activity, seen_ids, verbose)
+
+            for issue in activity_issues:
+                results["issues"].append(issue)
+                if issue["level"] == "error":
+                    results["activities"]["errors"].append(issue["message"])
+                else:
+                    results["activities"]["warnings"].append(issue["message"])
+
+            # Track validity
+            has_errors = any(i["level"] == "error" for i in activity_issues)
+            if not has_errors:
+                valid_count += 1
+                if activity.content:
+                    content_count += 1
+
+            seen_ids.add(activity.activity_id)
+
+        results["summary"]["valid_activities"] = valid_count
+        results["summary"]["activities_with_content"] = content_count
+
+        # Determine if activities section passed
+        activity_errors = [i for i in results["issues"] if i["level"] == "error"]
+        results["activities"]["passed"] = len(activity_errors) == 0
+
+        if not results["activities"]["passed"]:
+            results["ready_for_scoring"] = False
+
+    # 3. Content quality check
+    if results["summary"]["total_activities"] > 0:
+        content_ratio = (
+            results["summary"]["activities_with_content"] / results["summary"]["total_activities"]
+        )
+
+        if content_ratio < 0.5:
+            results["content"]["warnings"].append(
+                f"Only {content_ratio*100:.0f}% of activities have content - quality scoring may be limited"
+            )
+
+        if content_ratio == 0:
+            results["content"]["errors"].append(
+                "No activities have content - cannot compute quality scores"
+            )
+            results["ready_for_scoring"] = False
+        else:
+            results["content"]["passed"] = True
+    else:
+        results["content"]["passed"] = True
+
+    # 4. Location check
+    structure = RepoStructure(path)
+    location_issues = _check_activity_locations(activities, structure)
+
+    for issue in location_issues:
+        results["issues"].append(issue)
+        if issue["level"] == "error":
+            results["locations"]["errors"].append(issue["message"])
+        else:
+            results["locations"]["warnings"].append(issue["message"])
+
+    results["locations"]["passed"] = len(results["locations"]["errors"]) == 0
+
+    # Calculate summary
+    results["summary"]["errors"] = sum(
+        len(section["errors"])
+        for section in [
+            results["structure"],
+            results["activities"],
+            results["content"],
+            results["locations"],
+        ]
+    )
+    results["summary"]["warnings"] = sum(
+        len(section["warnings"])
+        for section in [
+            results["structure"],
+            results["activities"],
+            results["content"],
+            results["locations"],
+        ]
+    )
+
+    return results
+
+
+def _check_activity(activity: Any, seen_ids: set[str], verbose: bool) -> list[CheckIssue]:
+    """Check a single activity for issues."""
+    issues: list[CheckIssue] = []
+
+    # Check activity_id
+    if not activity.activity_id:
+        issues.append(
+            {
+                "level": "error",
+                "message": "Activity missing activity_id",
+                "activity_id": None,
+                "field": "activity_id",
+            }
+        )
+    elif activity.activity_id in seen_ids:
+        issues.append(
+            {
+                "level": "error",
+                "message": f"Duplicate activity_id: {activity.activity_id}",
+                "activity_id": activity.activity_id,
+                "field": "activity_id",
+            }
+        )
+    elif "_" not in activity.activity_id:
+        issues.append(
+            {
+                "level": "warning",
+                "message": f"Activity ID not in recommended format (platform_id): {activity.activity_id}",
+                "activity_id": activity.activity_id,
+                "field": "activity_id",
+            }
+        )
+
+    # Check timestamp
+    if not activity.timestamp:
+        issues.append(
+            {
+                "level": "error",
+                "message": "Activity missing timestamp",
+                "activity_id": activity.activity_id,
+                "field": "timestamp",
+            }
+        )
+
+    # Check platform
+    valid_platforms = ["twitter", "podcast", "blog", "youtube", "book"]
+    if not activity.platform:
+        issues.append(
+            {
+                "level": "error",
+                "message": "Activity missing platform",
+                "activity_id": activity.activity_id,
+                "field": "platform",
+            }
+        )
+    elif activity.platform not in valid_platforms:
+        issues.append(
+            {
+                "level": "warning",
+                "message": f"Unknown platform '{activity.platform}' - may not be scored correctly",
+                "activity_id": activity.activity_id,
+                "field": "platform",
+            }
+        )
+
+    # Check activity_type
+    if not activity.activity_type:
+        issues.append(
+            {
+                "level": "error",
+                "message": "Activity missing activity_type",
+                "activity_id": activity.activity_id,
+                "field": "activity_type",
+            }
+        )
+    elif activity.activity_type not in ["create", "consume"]:
+        issues.append(
+            {
+                "level": "error",
+                "message": f"Invalid activity_type '{activity.activity_type}' - must be 'create' or 'consume'",
+                "activity_id": activity.activity_id,
+                "field": "activity_type",
+            }
+        )
+
+    # Check content (warning only)
+    if not activity.content and not activity.title:
+        issues.append(
+            {
+                "level": "warning",
+                "message": "Activity has no content or title - quality scoring will be limited",
+                "activity_id": activity.activity_id,
+                "field": "content",
+            }
+        )
+
+    return issues
+
+
+def _check_activity_locations(activities: list[Any], structure: Any) -> list[CheckIssue]:
+    """Check if activities are in semantically correct locations."""
+    issues: list[CheckIssue] = []
+
+    # Group by type
+    creates = [a for a in activities if a.activity_type == "create"]
+    consumes = [a for a in activities if a.activity_type == "consume"]
+
+    # Check that we have the expected distribution
+    if len(creates) == 0 and len(consumes) > 0:
+        issues.append(
+            {
+                "level": "warning",
+                "message": "No 'create' activities found - only consumption data available",
+                "activity_id": None,
+                "field": None,
+            }
+        )
+
+    if len(consumes) == 0 and len(creates) > 0:
+        issues.append(
+            {
+                "level": "warning",
+                "message": "No 'consume' activities found - only creation data available",
+                "activity_id": None,
+                "field": None,
+            }
+        )
+
+    return issues
+
+
+def _display_check_section(name: str, section: CheckSection) -> None:
+    """Display a check section result."""
+    if section["passed"]:
+        status = click.style("PASS", fg="green")
+    elif section["errors"]:
+        status = click.style("FAIL", fg="red")
+    else:
+        status = click.style("WARN", fg="yellow")
+
+    click.echo(f"\n{name}: {status}")
+
+    # Show unique errors/warnings (deduplicated)
+    unique_errors = list(set(section["errors"]))[:3]
+    unique_warnings = list(set(section["warnings"]))[:3]
+
+    for error in unique_errors:
+        click.echo(click.style(f"  - {error}", fg="red"))
+
+    for warning in unique_warnings:
+        click.echo(click.style(f"  - {warning}", fg="yellow"))
+
+    remaining_errors = len(section["errors"]) - len(unique_errors)
+    remaining_warnings = len(section["warnings"]) - len(unique_warnings)
+
+    if remaining_errors > 0:
+        click.echo(f"  ... and {remaining_errors} more errors")
+    if remaining_warnings > 0:
+        click.echo(f"  ... and {remaining_warnings} more warnings")
+
+
 @cli.command("export")
 @click.argument("path", type=click.Path(exists=True))
 @click.option(
@@ -501,7 +939,10 @@ def add(
 @click.option("--force", is_flag=True, help="Force recompute all enhancements")
 @click.option("--clear", is_flag=True, help="Clear all enhancements without recomputing")
 @click.option("--status", "show_status", is_flag=True, help="Show enhancement status only")
-def enhance(path: str, force: bool, clear: bool, show_status: bool) -> None:
+@click.option(
+    "--archive-previous", is_flag=True, help="Archive current enhancements before recomputing"
+)
+def enhance(path: str, force: bool, clear: bool, show_status: bool, archive_previous: bool) -> None:
     """Manage enhancement layers for a repository.
 
     Computes and stores quality scores and game signatures separately
@@ -513,6 +954,7 @@ def enhance(path: str, force: bool, clear: bool, show_status: bool) -> None:
         metaspn enhance ./my-content --force      # Recompute all enhancements
         metaspn enhance ./my-content --status     # Show enhancement status
         metaspn enhance ./my-content --clear      # Clear all enhancements
+        metaspn enhance ./my-content --archive-previous  # Archive before recomputing
     """
     from metaspn.core.profile import compute_and_store_enhancements
     from metaspn.repo.enhancement_store import EnhancementStore
@@ -570,9 +1012,23 @@ def enhance(path: str, force: bool, clear: bool, show_status: bool) -> None:
                 click.echo("\nAll enhancements up to date.")
             return
 
+        # Archive previous if requested
+        if archive_previous:
+            click.echo("Archiving previous enhancements...")
+            for enhancement_type in ["quality_scores", "game_signatures"]:
+                latest_path = store.structure.get_enhancement_latest_path(enhancement_type)
+                if latest_path.exists():
+                    history_dir = store.structure.get_enhancement_history_dir(enhancement_type)
+                    archive_path = store._archive_enhancement(
+                        latest_path, history_dir, "manual_archive"
+                    )
+                    click.echo(f"  Archived {enhancement_type} to {archive_path.name}")
+            # Clear after archiving
+            store.clear_enhancements()
+
         # Compute enhancements
         click.echo("Computing enhancements...")
-        result = compute_and_store_enhancements(path, force_recompute=force)
+        result = compute_and_store_enhancements(path, force_recompute=force or archive_previous)
 
         click.echo("\nEnhancements computed:")
         click.echo(f"  Quality scores: {result['quality_scores']}")
@@ -583,6 +1039,290 @@ def enhance(path: str, force: bool, clear: bool, show_status: bool) -> None:
             click.echo("\nAll enhancements were already up to date.")
         else:
             click.echo("\nEnhancements saved to artifacts/enhancements/")
+            if archive_previous:
+                click.echo("(Previous enhancements archived to history/)")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--rebuild", is_flag=True, help="Force rebuild of all indexes")
+def index(path: str, rebuild: bool) -> None:
+    """Build or rebuild the activity index/manifest.
+
+    Creates indexes for fast filtered loading. The manifest tracks all
+    activities by platform, date, and type without loading the full data.
+
+    Example:
+        metaspn index ./my-content
+        metaspn index ./my-content --rebuild
+    """
+    from metaspn.repo.manifest import ManifestManager
+    from metaspn.repo.structure import validate_repo
+
+    try:
+        if not validate_repo(path):
+            click.echo(f"Error: Invalid repository at {path}", err=True)
+            raise SystemExit(1)
+
+        manager = ManifestManager(path)
+
+        if rebuild:
+            click.echo("Rebuilding manifest...")
+        elif manager.exists():
+            click.echo("Updating manifest...")
+        else:
+            click.echo("Building manifest...")
+
+        manifest = manager.build(force=rebuild)
+
+        click.echo("\nManifest built successfully")
+        click.echo("=" * 50)
+        click.echo(f"Total activities: {manifest.total_activities}")
+        click.echo(f"Last updated: {manifest.last_updated}")
+
+        if manifest.stats.get("by_platform"):
+            click.echo("\nBy platform:")
+            for platform, count in manifest.stats["by_platform"].items():
+                click.echo(f"  {platform}: {count}")
+
+        if manifest.stats.get("by_type"):
+            click.echo("\nBy type:")
+            for activity_type, count in manifest.stats["by_type"].items():
+                click.echo(f"  {activity_type}: {count}")
+
+        if manifest.stats.get("by_year"):
+            years = sorted(manifest.stats["by_year"].keys())
+            click.echo(f"\nYear range: {years[0]} - {years[-1]}")
+
+        click.echo("\nIndexes saved to artifacts/indexes/")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--platform", "-p", default=None, help="Filter by platform")
+@click.option(
+    "--type",
+    "activity_type",
+    default=None,
+    type=click.Choice(["create", "consume"]),
+    help="Filter by activity type",
+)
+@click.option("--since", default=None, help="Filter by start date (YYYY-MM-DD)")
+@click.option("--until", default=None, help="Filter by end date (YYYY-MM-DD)")
+@click.option("--limit", "-n", default=10, type=int, help="Maximum results to show")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.option("--count", is_flag=True, help="Show count only")
+def query(
+    path: str,
+    platform: Optional[str],
+    activity_type: Optional[str],
+    since: Optional[str],
+    until: Optional[str],
+    limit: int,
+    as_json: bool,
+    count: bool,
+) -> None:
+    """Query activities with filters.
+
+    Uses the manifest index when available for fast filtering.
+
+    Example:
+        metaspn query ./my-content --platform twitter --limit 10
+        metaspn query ./my-content --since 2024-01-01 --until 2024-01-31
+        metaspn query ./my-content --type create --count
+    """
+    from metaspn.repo.loader import ActivityLoader
+    from metaspn.repo.structure import validate_repo
+
+    try:
+        if not validate_repo(path):
+            click.echo(f"Error: Invalid repository at {path}", err=True)
+            raise SystemExit(1)
+
+        loader = ActivityLoader(path)
+
+        # Parse dates
+        start_date = None
+        end_date = None
+        if since:
+            start_date = datetime.strptime(since, "%Y-%m-%d")
+        if until:
+            end_date = datetime.strptime(until, "%Y-%m-%d")
+
+        if count:
+            # Just count
+            total = loader.count(platform=platform, activity_type=activity_type)
+            if as_json:
+                click.echo(json.dumps({"count": total}))
+            else:
+                filters = []
+                if platform:
+                    filters.append(f"platform={platform}")
+                if activity_type:
+                    filters.append(f"type={activity_type}")
+                filter_str = f" ({', '.join(filters)})" if filters else ""
+                click.echo(f"Count: {total}{filter_str}")
+            return
+
+        # Query activities
+        activities = list(
+            loader.query(
+                platform=platform,
+                activity_type=activity_type,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            )
+        )
+
+        if as_json:
+            click.echo(json.dumps([a.to_dict() for a in activities], default=str, indent=2))
+        else:
+            click.echo(f"\nFound {len(activities)} activities")
+            if platform or activity_type or since or until:
+                filters = []
+                if platform:
+                    filters.append(f"platform={platform}")
+                if activity_type:
+                    filters.append(f"type={activity_type}")
+                if since:
+                    filters.append(f"since={since}")
+                if until:
+                    filters.append(f"until={until}")
+                click.echo(f"Filters: {', '.join(filters)}")
+            click.echo("=" * 50)
+
+            for activity in activities:
+                ts_str = activity.timestamp.strftime("%Y-%m-%d %H:%M")
+                title = activity.title or (
+                    activity.content[:50] + "..."
+                    if activity.content and len(activity.content) > 50
+                    else activity.content or ""
+                )
+                click.echo(f"[{ts_str}] {activity.platform}/{activity.activity_type}: {title}")
+                if activity.url:
+                    click.echo(f"  URL: {activity.url}")
+
+            if len(activities) == limit:
+                click.echo(f"\n(Showing first {limit} results. Use --limit to see more.)")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.argument("activity_id", required=False)
+@click.option(
+    "--type",
+    "enhancement_type",
+    default="quality_scores",
+    type=click.Choice(["quality_scores", "game_signatures", "embeddings"]),
+    help="Enhancement type",
+)
+@click.option("--list", "list_history", is_flag=True, help="List all history files")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def history(
+    path: str,
+    activity_id: Optional[str],
+    enhancement_type: str,
+    list_history: bool,
+    as_json: bool,
+) -> None:
+    """View enhancement history for activities.
+
+    Shows how scores/signatures have evolved over time as algorithms changed.
+
+    Example:
+        metaspn history ./my-content --list                    # List history files
+        metaspn history ./my-content twitter_123456            # Show history for activity
+        metaspn history ./my-content twitter_123456 --type game_signatures
+    """
+    from metaspn.repo.enhancement_store import EnhancementStore
+    from metaspn.repo.structure import validate_repo
+
+    try:
+        if not validate_repo(path):
+            click.echo(f"Error: Invalid repository at {path}", err=True)
+            raise SystemExit(1)
+
+        store = EnhancementStore(path)
+
+        if list_history:
+            # List all history files
+            history_files = store.list_history(enhancement_type)
+
+            if as_json:
+                click.echo(json.dumps([str(f.name) for f in history_files]))
+            else:
+                click.echo(f"\nEnhancement History: {enhancement_type}")
+                click.echo("=" * 50)
+
+                if not history_files:
+                    click.echo("No history files found.")
+                    click.echo(
+                        "(History is created when enhancements are recomputed with --archive-previous)"
+                    )
+                else:
+                    for f in history_files:
+                        click.echo(f"  {f.name}")
+
+                # Check current version
+                versions = store.get_current_algorithm_versions()
+                click.echo(f"\nCurrent algorithm version: {versions[enhancement_type]}")
+
+                needs_recompute = store.needs_recompute(enhancement_type)
+                if needs_recompute:
+                    click.echo(
+                        "(Algorithm has changed - run 'metaspn enhance --archive-previous' to update)"
+                    )
+            return
+
+        if not activity_id:
+            click.echo("Error: activity_id is required (or use --list)", err=True)
+            raise SystemExit(1)
+
+        # Get timeline for specific activity
+        timeline = store.get_enhancement_timeline(activity_id, enhancement_type)
+
+        if as_json:
+            click.echo(json.dumps(timeline, indent=2, default=str))
+        else:
+            click.echo(f"\nEnhancement Timeline: {activity_id}")
+            click.echo(f"Type: {enhancement_type}")
+            click.echo("=" * 50)
+
+            if not timeline:
+                click.echo("No enhancement history found for this activity.")
+            else:
+                for entry in timeline:
+                    source = entry.pop("_source", "unknown")
+                    computed = entry.get("computed_at", "unknown")
+                    version = entry.get("algorithm_version", "unknown")
+
+                    click.echo(f"\n[{computed}] v{version} (from {source})")
+
+                    # Show key metrics
+                    if enhancement_type == "quality_scores":
+                        click.echo(f"  Quality Score: {entry.get('quality_score', 'N/A')}")
+                        click.echo(f"  Content Score: {entry.get('content_score', 'N/A')}")
+                        click.echo(f"  Consistency Score: {entry.get('consistency_score', 'N/A')}")
+                    elif enhancement_type == "game_signatures":
+                        sig = entry.get("game_signature", {})
+                        click.echo(f"  Primary Game: {sig.get('primary_game', 'N/A')}")
+                        click.echo(f"  Confidence: {entry.get('confidence', 'N/A')}")
+                    elif enhancement_type == "embeddings":
+                        click.echo(f"  Dimensions: {entry.get('dimensions', 'N/A')}")
+                        click.echo(f"  Model: {entry.get('model_name', 'N/A')}")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
