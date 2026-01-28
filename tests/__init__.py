@@ -1,0 +1,1 @@
+"""MetaSPN test suite."""
