@@ -1,24 +1,25 @@
 """FastAPI server for MetaSPN."""
 
+import os
+from datetime import datetime
+from typing import Any, Optional
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
-from datetime import datetime
-import os
 
 
 # Request/Response models
 class ComputeRequest(BaseModel):
     """Request model for profile computation."""
-    
+
     repo_path: str = Field(..., description="Path to MetaSPN repository")
     force_recompute: bool = Field(False, description="Force recompute ignoring cache")
 
 
 class InitRepoRequest(BaseModel):
     """Request model for repository initialization."""
-    
+
     path: str = Field(..., description="Path where to create repository")
     user_id: str = Field(..., description="Unique user identifier")
     name: str = Field(..., description="Display name")
@@ -28,7 +29,7 @@ class InitRepoRequest(BaseModel):
 
 class AddActivityRequest(BaseModel):
     """Request model for adding an activity."""
-    
+
     repo_path: str = Field(..., description="Path to MetaSPN repository")
     platform: str = Field(..., description="Platform name")
     activity_type: str = Field("create", description="Activity type (create/consume)")
@@ -41,7 +42,7 @@ class AddActivityRequest(BaseModel):
 
 class HealthResponse(BaseModel):
     """Health check response."""
-    
+
     status: str
     version: str
     timestamp: str
@@ -49,21 +50,21 @@ class HealthResponse(BaseModel):
 
 class ProfileResponse(BaseModel):
     """Profile response model."""
-    
+
     user_id: str
     name: str
     handle: str
     level: int
     rarity: str
     phase: Optional[str]
-    platforms: List[Dict[str, Any]]
-    metrics: Dict[str, Any]
-    cards: Optional[Dict[str, Any]]
+    platforms: list[dict[str, Any]]
+    metrics: dict[str, Any]
+    cards: Optional[dict[str, Any]]
 
 
 class CardResponse(BaseModel):
     """Card response model."""
-    
+
     card_id: str
     card_type: str
     card_number: str
@@ -74,7 +75,7 @@ class CardResponse(BaseModel):
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-    
+
     app = FastAPI(
         title="MetaSPN API",
         description="Measure transformation, not engagement. API for computing profiles and generating cards.",
@@ -82,7 +83,7 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
     )
-    
+
     # CORS middleware
     app.add_middleware(
         CORSMiddleware,
@@ -91,7 +92,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    
+
     return app
 
 
@@ -99,7 +100,7 @@ app = create_app()
 
 
 @app.get("/", tags=["Root"])
-async def root() -> Dict[str, str]:
+async def root() -> dict[str, str]:
     """Root endpoint with API information."""
     return {
         "name": "MetaSPN API",
@@ -120,22 +121,22 @@ async def health_check() -> HealthResponse:
 
 
 @app.post("/profile", tags=["Profile"])
-async def compute_profile_endpoint(request: ComputeRequest) -> Dict[str, Any]:
+async def compute_profile_endpoint(request: ComputeRequest) -> dict[str, Any]:
     """Compute and return user profile from repository.
-    
+
     This endpoint reads activities from the repository, computes
     all metrics, and returns the complete profile.
     """
     from metaspn import compute_profile
     from metaspn.repo import validate_repo
-    
+
     # Validate repository exists
     if not os.path.exists(request.repo_path):
         raise HTTPException(status_code=404, detail=f"Repository not found: {request.repo_path}")
-    
+
     if not validate_repo(request.repo_path):
         raise HTTPException(status_code=400, detail="Invalid MetaSPN repository")
-    
+
     try:
         profile = compute_profile(
             request.repo_path,
@@ -150,22 +151,22 @@ async def compute_profile_endpoint(request: ComputeRequest) -> Dict[str, Any]:
 async def get_profile_by_user(
     user_id: str,
     base_path: str = Query("./repos", description="Base path for repositories"),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Get profile by user ID.
-    
+
     Assumes repositories are stored at {base_path}/{user_id}.
     """
     from metaspn import compute_profile
     from metaspn.repo import validate_repo
-    
+
     repo_path = os.path.join(base_path, user_id)
-    
+
     if not os.path.exists(repo_path):
         raise HTTPException(status_code=404, detail=f"Repository not found for user: {user_id}")
-    
+
     if not validate_repo(repo_path):
         raise HTTPException(status_code=400, detail="Invalid MetaSPN repository")
-    
+
     try:
         profile = compute_profile(repo_path)
         return profile.to_dict()
@@ -174,20 +175,20 @@ async def get_profile_by_user(
 
 
 @app.post("/cards", tags=["Cards"])
-async def generate_cards_endpoint(request: ComputeRequest) -> List[Dict[str, Any]]:
+async def generate_cards_endpoint(request: ComputeRequest) -> list[dict[str, Any]]:
     """Generate trading cards for a user.
-    
+
     Computes the profile and generates all applicable cards.
     """
     from metaspn import compute_profile, generate_cards
     from metaspn.repo import validate_repo
-    
+
     if not os.path.exists(request.repo_path):
         raise HTTPException(status_code=404, detail=f"Repository not found: {request.repo_path}")
-    
+
     if not validate_repo(request.repo_path):
         raise HTTPException(status_code=400, detail="Invalid MetaSPN repository")
-    
+
     try:
         profile = compute_profile(
             request.repo_path,
@@ -203,22 +204,22 @@ async def generate_cards_endpoint(request: ComputeRequest) -> List[Dict[str, Any
 async def get_cards_by_user(
     user_id: str,
     base_path: str = Query("./repos", description="Base path for repositories"),
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Get cards by user ID.
-    
+
     Assumes repositories are stored at {base_path}/{user_id}.
     """
     from metaspn import compute_profile, generate_cards
     from metaspn.repo import validate_repo
-    
+
     repo_path = os.path.join(base_path, user_id)
-    
+
     if not os.path.exists(repo_path):
         raise HTTPException(status_code=404, detail=f"Repository not found for user: {user_id}")
-    
+
     if not validate_repo(repo_path):
         raise HTTPException(status_code=400, detail="Invalid MetaSPN repository")
-    
+
     try:
         profile = compute_profile(repo_path)
         cards = generate_cards(profile)
@@ -228,13 +229,13 @@ async def get_cards_by_user(
 
 
 @app.post("/repo/init", tags=["Repository"])
-async def init_repo_endpoint(request: InitRepoRequest) -> Dict[str, Any]:
+async def init_repo_endpoint(request: InitRepoRequest) -> dict[str, Any]:
     """Initialize a new MetaSPN repository."""
     from metaspn.repo import init_repo
-    
+
     if os.path.exists(os.path.join(request.path, ".metaspn")):
         raise HTTPException(status_code=400, detail="Repository already exists at this path")
-    
+
     try:
         user_info = {
             "user_id": request.user_id,
@@ -243,9 +244,9 @@ async def init_repo_endpoint(request: InitRepoRequest) -> Dict[str, Any]:
         }
         if request.avatar_url:
             user_info["avatar_url"] = request.avatar_url
-        
+
         init_repo(request.path, user_info)
-        
+
         return {
             "status": "success",
             "message": f"Repository initialized at {request.path}",
@@ -259,15 +260,15 @@ async def init_repo_endpoint(request: InitRepoRequest) -> Dict[str, Any]:
 @app.get("/repo/validate", tags=["Repository"])
 async def validate_repo_endpoint(
     path: str = Query(..., description="Path to repository"),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Validate a MetaSPN repository structure."""
-    from metaspn.repo import validate_repo, get_repo_info
-    
+    from metaspn.repo import get_repo_info, validate_repo
+
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail=f"Path not found: {path}")
-    
+
     is_valid = validate_repo(path)
-    
+
     if is_valid:
         info = get_repo_info(path)
         return {
@@ -282,25 +283,25 @@ async def validate_repo_endpoint(
 
 
 @app.post("/activity", tags=["Activities"])
-async def add_activity_endpoint(request: AddActivityRequest) -> Dict[str, Any]:
+async def add_activity_endpoint(request: AddActivityRequest) -> dict[str, Any]:
     """Add an activity to a repository."""
     from metaspn.core.profile import Activity
     from metaspn.repo import add_activity, validate_repo
     from metaspn.utils.dates import parse_date
-    
+
     if not os.path.exists(request.repo_path):
         raise HTTPException(status_code=404, detail=f"Repository not found: {request.repo_path}")
-    
+
     if not validate_repo(request.repo_path):
         raise HTTPException(status_code=400, detail="Invalid MetaSPN repository")
-    
+
     try:
         # Parse timestamp
         if request.timestamp:
             timestamp = parse_date(request.timestamp)
         else:
             timestamp = datetime.now()
-        
+
         activity = Activity(
             timestamp=timestamp,
             platform=request.platform,
@@ -310,9 +311,9 @@ async def add_activity_endpoint(request: AddActivityRequest) -> Dict[str, Any]:
             url=request.url,
             duration_seconds=request.duration_seconds,
         )
-        
+
         file_path = add_activity(request.repo_path, activity)
-        
+
         return {
             "status": "success",
             "activity_id": activity.activity_id,
@@ -327,22 +328,22 @@ async def get_activities_endpoint(
     path: str = Query(..., description="Path to repository"),
     platform: Optional[str] = Query(None, description="Filter by platform"),
     limit: int = Query(100, description="Maximum number of activities"),
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Get activities from a repository."""
     from metaspn.repo import load_activities, validate_repo
-    
+
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail=f"Repository not found: {path}")
-    
+
     if not validate_repo(path):
         raise HTTPException(status_code=400, detail="Invalid MetaSPN repository")
-    
+
     try:
         activities = load_activities(path, platform)
-        
+
         # Apply limit
         activities = activities[-limit:]
-        
+
         return [a.to_dict() for a in activities]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -351,25 +352,25 @@ async def get_activities_endpoint(
 @app.get("/stats", tags=["Stats"])
 async def get_stats_endpoint(
     path: str = Query(..., description="Path to repository"),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Get repository statistics."""
     from metaspn import compute_profile
-    from metaspn.repo import validate_repo, get_repo_info
+    from metaspn.repo import get_repo_info, validate_repo
     from metaspn.repo.reader import RepoReader
-    
+
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail=f"Repository not found: {path}")
-    
+
     if not validate_repo(path):
         raise HTTPException(status_code=400, detail="Invalid MetaSPN repository")
-    
+
     try:
         info = get_repo_info(path)
         reader = RepoReader(path)
         platform_stats = reader.get_platform_stats()
-        
+
         profile = compute_profile(path)
-        
+
         return {
             "repo_info": info,
             "platform_stats": platform_stats,
@@ -385,7 +386,7 @@ async def get_stats_endpoint(
 
 # Error handlers
 @app.exception_handler(Exception)
-async def general_exception_handler(request: Any, exc: Exception) -> Dict[str, Any]:
+async def general_exception_handler(request: Any, exc: Exception) -> dict[str, Any]:
     """Handle unexpected exceptions."""
     return {
         "error": True,

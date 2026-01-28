@@ -1,9 +1,9 @@
 """Level, rarity, and achievement systems for MetaSPN."""
 
-from dataclasses import dataclass, field
-from typing import List, Optional, Callable, TYPE_CHECKING
-from datetime import datetime
 import math
+from dataclasses import dataclass
+from datetime import datetime
+from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
     from metaspn.core.profile import Activity, ProfileMetrics
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 @dataclass
 class Badge:
     """Achievement badge earned by a user."""
-    
+
     badge_id: str
     name: str
     description: str
@@ -21,7 +21,7 @@ class Badge:
     category: str
     earned_at: datetime
     rarity: str = "common"  # common, uncommon, rare, epic, legendary
-    
+
     def to_dict(self) -> dict:
         """Serialize to dictionary."""
         return {
@@ -33,7 +33,7 @@ class Badge:
             "earned_at": self.earned_at.isoformat(),
             "rarity": self.rarity,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> "Badge":
         """Deserialize from dictionary."""
@@ -43,7 +43,11 @@ class Badge:
             description=data["description"],
             icon=data.get("icon", "🏆"),
             category=data.get("category", "general"),
-            earned_at=datetime.fromisoformat(data["earned_at"]) if data.get("earned_at") else datetime.now(),
+            earned_at=(
+                datetime.fromisoformat(data["earned_at"])
+                if data.get("earned_at")
+                else datetime.now()
+            ),
             rarity=data.get("rarity", "common"),
         )
 
@@ -51,7 +55,7 @@ class Badge:
 @dataclass
 class AchievementDefinition:
     """Definition of an achievement that can be earned."""
-    
+
     badge_id: str
     name: str
     description: str
@@ -63,13 +67,13 @@ class AchievementDefinition:
 
 class LevelCalculator:
     """Calculator for XP and levels.
-    
+
     XP System:
         - Creation activities: 100 XP base + quality bonus
         - Consumption activities: 25 XP base + engagement bonus
         - Streak bonuses: +10% per consecutive day (max 50%)
         - Quality multiplier: up to 2x for high quality content
-    
+
     Level Formula:
         XP required = 100 * (level ^ 1.5)
         Level 1: 100 XP
@@ -78,40 +82,36 @@ class LevelCalculator:
         Level 20: ~8,944 XP
         Level 50: ~35,355 XP
     """
-    
+
     # Base XP values
     CREATE_BASE_XP = 100
     CONSUME_BASE_XP = 25
-    
+
     # Level formula exponent
     LEVEL_EXPONENT = 1.5
     LEVEL_BASE = 100
-    
-    def compute_xp(
-        self, 
-        activities: List["Activity"], 
-        metrics: "ProfileMetrics"
-    ) -> int:
+
+    def compute_xp(self, activities: list["Activity"], metrics: "ProfileMetrics") -> int:
         """Compute total XP from activities and metrics.
-        
+
         Args:
             activities: List of all activities
             metrics: Computed profile metrics
-        
+
         Returns:
             Total XP as integer
         """
         if not activities:
             return 0
-        
+
         total_xp = 0
-        
+
         # Sort activities by timestamp for streak calculation
         sorted_activities = sorted(activities, key=lambda a: a.timestamp)
-        
+
         current_streak = 0
         last_date = None
-        
+
         for activity in sorted_activities:
             # Calculate streak bonus
             activity_date = activity.timestamp.date()
@@ -122,108 +122,108 @@ class LevelCalculator:
                 elif days_diff > 1:
                     current_streak = 0
             last_date = activity_date
-            
+
             streak_multiplier = 1.0 + (current_streak * 0.10)  # +10% per streak day
-            
+
             # Base XP by activity type
             if activity.activity_type == "create":
                 base_xp = self.CREATE_BASE_XP
-                
+
                 # Quality bonus for creation
                 quality = activity.quality_score or 0.5
                 quality_multiplier = 1.0 + quality  # 1.0-2.0x
-                
+
                 xp = base_xp * quality_multiplier * streak_multiplier
             else:
                 base_xp = self.CONSUME_BASE_XP
-                
+
                 # Duration bonus for consumption
                 duration_hours = (activity.duration_seconds or 0) / 3600.0
                 duration_bonus = min(duration_hours * 10, 50)  # Max 50 XP duration bonus
-                
+
                 xp = (base_xp + duration_bonus) * streak_multiplier
-            
+
             total_xp += int(xp)
-        
+
         # Achievement bonuses
         if metrics.development:
             total_xp += len(metrics.development.achievements) * 50
-        
+
         return total_xp
-    
+
     def compute_level(self, xp: int) -> int:
         """Compute level from XP.
-        
+
         Args:
             xp: Total XP
-        
+
         Returns:
             Current level (minimum 1)
         """
         if xp <= 0:
             return 1
-        
+
         # Inverse of XP formula: level = (xp / base) ^ (1/exponent)
         level = int(math.pow(xp / self.LEVEL_BASE, 1 / self.LEVEL_EXPONENT))
         return max(1, level)
-    
+
     def xp_for_level(self, level: int) -> int:
         """Calculate XP required for a specific level.
-        
+
         Args:
             level: Target level
-        
+
         Returns:
             XP required to reach that level
         """
         if level <= 1:
             return 0
         return int(self.LEVEL_BASE * math.pow(level, self.LEVEL_EXPONENT))
-    
+
     def xp_to_next_level(self, current_xp: int) -> int:
         """Calculate XP needed to reach next level.
-        
+
         Args:
             current_xp: Current XP
-        
+
         Returns:
             XP needed for next level
         """
         current_level = self.compute_level(current_xp)
         next_level_xp = self.xp_for_level(current_level + 1)
         return max(0, next_level_xp - current_xp)
-    
+
     def level_progress(self, current_xp: int) -> float:
         """Calculate progress through current level.
-        
+
         Args:
             current_xp: Current XP
-        
+
         Returns:
             Progress as 0.0-1.0
         """
         current_level = self.compute_level(current_xp)
         current_level_xp = self.xp_for_level(current_level)
         next_level_xp = self.xp_for_level(current_level + 1)
-        
+
         level_range = next_level_xp - current_level_xp
         if level_range <= 0:
             return 1.0
-        
+
         progress_in_level = current_xp - current_level_xp
         return min(1.0, max(0.0, progress_in_level / level_range))
 
 
 class RarityCalculator:
     """Calculator for rarity tiers.
-    
+
     Rarity Tiers:
         common: Default, basic activity
         uncommon: Some notable characteristics
         rare: Significant achievement or quality
         epic: Exceptional performance
         legendary: Top-tier, rare accomplishment
-    
+
     Factors:
         - Quality score (creator)
         - Consistency
@@ -231,25 +231,21 @@ class RarityCalculator:
         - Achievement count
         - Impact factor
     """
-    
+
     TIERS = ["common", "uncommon", "rare", "epic", "legendary"]
-    
-    def compute(
-        self, 
-        metrics: "ProfileMetrics", 
-        lifecycle: Optional["LifecycleState"]
-    ) -> str:
+
+    def compute(self, metrics: "ProfileMetrics", lifecycle: Optional["LifecycleState"]) -> str:
         """Compute rarity tier based on metrics and lifecycle.
-        
+
         Args:
             metrics: Profile metrics
             lifecycle: Current lifecycle state
-        
+
         Returns:
             Rarity tier string
         """
         score = 0.0
-        
+
         # Creator metrics contribution (if present)
         if metrics.creator:
             score += metrics.creator.quality_score * 25
@@ -257,12 +253,12 @@ class RarityCalculator:
             score += metrics.creator.consistency_score * 10
             if metrics.creator.game_signature.is_specialist:
                 score += 10
-        
+
         # Consumer metrics contribution (if present)
         if metrics.consumer:
             score += metrics.consumer.execution_rate * 15
             score += metrics.consumer.integration_skill * 10
-        
+
         # Lifecycle contribution
         if lifecycle:
             phase_scores = {
@@ -273,11 +269,11 @@ class RarityCalculator:
                 "legend": 40,
             }
             score += phase_scores.get(lifecycle.phase, 0)
-        
+
         # Achievement contribution
         achievement_count = len(metrics.development.achievements)
         score += min(achievement_count * 2, 20)  # Max 20 points from achievements
-        
+
         # Determine tier based on score
         if score >= 80:
             return "legendary"
@@ -289,14 +285,14 @@ class RarityCalculator:
             return "uncommon"
         else:
             return "common"
-    
+
     def tier_index(self, tier: str) -> int:
         """Get numeric index for tier (for comparisons)."""
         try:
             return self.TIERS.index(tier)
         except ValueError:
             return 0
-    
+
     def is_higher_tier(self, tier1: str, tier2: str) -> bool:
         """Check if tier1 is higher than tier2."""
         return self.tier_index(tier1) > self.tier_index(tier2)
@@ -304,7 +300,7 @@ class RarityCalculator:
 
 class AchievementSystem:
     """System for tracking and awarding achievements.
-    
+
     Achievement Categories:
         - activity: Based on activity counts and types
         - streak: Based on consecutive activity
@@ -313,12 +309,12 @@ class AchievementSystem:
         - milestone: Major milestones
         - special: Special/rare achievements
     """
-    
+
     def __init__(self) -> None:
         """Initialize with achievement definitions."""
         self.definitions = self._create_definitions()
-    
-    def _create_definitions(self) -> List[AchievementDefinition]:
+
+    def _create_definitions(self) -> list[AchievementDefinition]:
         """Create all achievement definitions."""
         return [
             # Activity achievements
@@ -367,7 +363,6 @@ class AchievementSystem:
                 rarity="epic",
                 check=lambda acts, metrics, _: len(acts) >= 500,
             ),
-            
             # Creator achievements
             AchievementDefinition(
                 badge_id="first_creation",
@@ -385,7 +380,8 @@ class AchievementSystem:
                 icon="🎯",
                 category="quality",
                 rarity="rare",
-                check=lambda _, metrics, __: metrics.creator is not None and metrics.creator.quality_score >= 0.80,
+                check=lambda _, metrics, __: metrics.creator is not None
+                and metrics.creator.quality_score >= 0.80,
             ),
             AchievementDefinition(
                 badge_id="consistent_creator",
@@ -394,9 +390,9 @@ class AchievementSystem:
                 icon="📅",
                 category="quality",
                 rarity="rare",
-                check=lambda _, metrics, __: metrics.creator is not None and metrics.creator.consistency_score >= 0.70,
+                check=lambda _, metrics, __: metrics.creator is not None
+                and metrics.creator.consistency_score >= 0.70,
             ),
-            
             # Streak achievements
             AchievementDefinition(
                 badge_id="week_streak",
@@ -416,7 +412,6 @@ class AchievementSystem:
                 rarity="rare",
                 check=lambda _, metrics, __: metrics.development.streak_longest >= 30,
             ),
-            
             # Platform achievements
             AchievementDefinition(
                 badge_id="multi_platform",
@@ -427,7 +422,6 @@ class AchievementSystem:
                 rarity="uncommon",
                 check=lambda _, metrics, __: metrics.development.platforms_active >= 3,
             ),
-            
             # Lifecycle achievements
             AchievementDefinition(
                 badge_id="phase_developing",
@@ -436,7 +430,8 @@ class AchievementSystem:
                 icon="📈",
                 category="milestone",
                 rarity="common",
-                check=lambda _, __, lifecycle: lifecycle is not None and lifecycle.phase != "rookie",
+                check=lambda _, __, lifecycle: lifecycle is not None
+                and lifecycle.phase != "rookie",
             ),
             AchievementDefinition(
                 badge_id="phase_established",
@@ -445,7 +440,8 @@ class AchievementSystem:
                 icon="🏛️",
                 category="milestone",
                 rarity="uncommon",
-                check=lambda _, __, lifecycle: lifecycle is not None and lifecycle.phase in ["established", "veteran", "legend"],
+                check=lambda _, __, lifecycle: lifecycle is not None
+                and lifecycle.phase in ["established", "veteran", "legend"],
             ),
             AchievementDefinition(
                 badge_id="phase_veteran",
@@ -454,7 +450,8 @@ class AchievementSystem:
                 icon="🎖️",
                 category="milestone",
                 rarity="rare",
-                check=lambda _, __, lifecycle: lifecycle is not None and lifecycle.phase in ["veteran", "legend"],
+                check=lambda _, __, lifecycle: lifecycle is not None
+                and lifecycle.phase in ["veteran", "legend"],
             ),
             AchievementDefinition(
                 badge_id="phase_legend",
@@ -463,9 +460,9 @@ class AchievementSystem:
                 icon="👑",
                 category="milestone",
                 rarity="legendary",
-                check=lambda _, __, lifecycle: lifecycle is not None and lifecycle.phase == "legend",
+                check=lambda _, __, lifecycle: lifecycle is not None
+                and lifecycle.phase == "legend",
             ),
-            
             # Game achievements
             AchievementDefinition(
                 badge_id="game_specialist",
@@ -474,7 +471,8 @@ class AchievementSystem:
                 icon="🎯",
                 category="special",
                 rarity="rare",
-                check=lambda _, metrics, __: metrics.creator is not None and metrics.creator.game_signature.is_specialist,
+                check=lambda _, metrics, __: metrics.creator is not None
+                and metrics.creator.game_signature.is_specialist,
             ),
             AchievementDefinition(
                 badge_id="game_multi",
@@ -483,28 +481,29 @@ class AchievementSystem:
                 icon="🎨",
                 category="special",
                 rarity="rare",
-                check=lambda _, metrics, __: metrics.creator is not None and metrics.creator.game_signature.is_multi_game,
+                check=lambda _, metrics, __: metrics.creator is not None
+                and metrics.creator.game_signature.is_multi_game,
             ),
         ]
-    
+
     def compute(
         self,
-        activities: List["Activity"],
+        activities: list["Activity"],
         metrics: "ProfileMetrics",
         lifecycle: Optional["LifecycleState"],
-    ) -> List[Badge]:
+    ) -> list[Badge]:
         """Compute all earned badges.
-        
+
         Args:
             activities: All user activities
             metrics: Computed profile metrics
             lifecycle: Current lifecycle state
-        
+
         Returns:
             List of earned Badge objects
         """
         earned_badges = []
-        
+
         for definition in self.definitions:
             try:
                 if definition.check(activities, metrics, lifecycle):
@@ -521,20 +520,20 @@ class AchievementSystem:
             except Exception:
                 # Skip badges that fail to compute
                 continue
-        
+
         return earned_badges
-    
+
     def get_definition(self, badge_id: str) -> Optional[AchievementDefinition]:
         """Get achievement definition by ID."""
         for definition in self.definitions:
             if definition.badge_id == badge_id:
                 return definition
         return None
-    
-    def get_by_category(self, category: str) -> List[AchievementDefinition]:
+
+    def get_by_category(self, category: str) -> list[AchievementDefinition]:
         """Get all achievements in a category."""
         return [d for d in self.definitions if d.category == category]
-    
-    def get_by_rarity(self, rarity: str) -> List[AchievementDefinition]:
+
+    def get_by_rarity(self, rarity: str) -> list[AchievementDefinition]:
         """Get all achievements of a specific rarity."""
         return [d for d in self.definitions if d.rarity == rarity]

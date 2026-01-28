@@ -5,9 +5,9 @@ A Python package for computing development metrics and generating
 trading cards from content repositories.
 """
 
-from metaspn.core.profile import compute_profile, UserProfile, Activity
 from metaspn.core.card import generate_cards
-from metaspn.repo import init_repo, add_activity
+from metaspn.core.profile import Activity, UserProfile, compute_profile
+from metaspn.repo import add_activity, init_repo
 
 __version__ = "0.1.0"
 __all__ = [

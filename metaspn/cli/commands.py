@@ -1,18 +1,18 @@
 """CLI commands for MetaSPN."""
 
-import os
 import json
-import click
-from pathlib import Path
+import os
 from datetime import datetime
 from typing import Optional
+
+import click
 
 
 @click.group()
 @click.version_option(version="0.1.0", prog_name="metaspn")
 def cli() -> None:
     """MetaSPN - Measure transformation, not engagement.
-    
+
     A toolkit for computing development metrics and generating
     trading cards from content repositories.
     """
@@ -25,17 +25,19 @@ def cli() -> None:
 @click.option("--name", required=True, help="Display name")
 @click.option("--handle", default=None, help="User handle (e.g., @username)")
 @click.option("--avatar-url", default=None, help="URL to avatar image")
-def init(path: str, user_id: str, name: str, handle: Optional[str], avatar_url: Optional[str]) -> None:
+def init(
+    path: str, user_id: str, name: str, handle: Optional[str], avatar_url: Optional[str]
+) -> None:
     """Initialize a new MetaSPN repository.
-    
+
     Creates the directory structure and initial configuration files
     for tracking content and computing profiles.
-    
+
     Example:
         metaspn init ./my-content --user-id leo_guinan --name "Leo Guinan"
     """
     from metaspn.repo import init_repo
-    
+
     try:
         user_info = {
             "user_id": user_id,
@@ -44,12 +46,12 @@ def init(path: str, user_id: str, name: str, handle: Optional[str], avatar_url: 
         }
         if avatar_url:
             user_info["avatar_url"] = avatar_url
-        
+
         init_repo(path, user_info)
         click.echo(f"Initialized MetaSPN repository at {path}")
         click.echo(f"  User: {name} ({handle or f'@{user_id}'})")
-        click.echo(f"\nNext steps:")
-        click.echo(f"  1. Add activities to sources/")
+        click.echo("\nNext steps:")
+        click.echo("  1. Add activities to sources/")
         click.echo(f"  2. Run 'metaspn profile {path}' to compute profile")
     except FileExistsError:
         click.echo(f"Error: Repository already exists at {path}", err=True)
@@ -66,21 +68,21 @@ def init(path: str, user_id: str, name: str, handle: Optional[str], avatar_url: 
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def profile(path: str, force: bool, output: Optional[str], as_json: bool) -> None:
     """Compute user profile from repository.
-    
+
     Analyzes all activities in the repository and computes
     metrics, lifecycle state, level, rarity, and achievements.
-    
+
     Example:
         metaspn profile ./my-content
         metaspn profile ./my-content --force --json
     """
     from metaspn import compute_profile
-    
+
     try:
         click.echo("Computing profile...")
-        
+
         result = compute_profile(path, force_recompute=force)
-        
+
         if as_json or output:
             json_output = result.to_json()
             if output:
@@ -96,41 +98,43 @@ def profile(path: str, force: bool, output: Optional[str], as_json: bool) -> Non
             click.echo(f"Level: {result.cards.level if result.cards else 'N/A'}")
             click.echo(f"XP: {result.cards.xp if result.cards else 0}")
             click.echo(f"Rarity: {result.cards.rarity if result.cards else 'common'}")
-            
+
             if result.lifecycle:
                 click.echo(f"Phase: {result.lifecycle.phase}")
-            
+
             if result.platforms:
                 click.echo(f"\nPlatforms ({len(result.platforms)}):")
                 for platform in result.platforms:
-                    click.echo(f"  - {platform.platform}: {platform.role} "
-                              f"({platform.activity_count} activities)")
-            
+                    click.echo(
+                        f"  - {platform.platform}: {platform.role} "
+                        f"({platform.activity_count} activities)"
+                    )
+
             if result.metrics.creator:
-                click.echo(f"\nCreator Metrics:")
-                cm = result.metrics.creator
-                click.echo(f"  Quality Score: {cm.quality_score:.2f}")
-                click.echo(f"  Game Alignment: {cm.game_alignment:.2f}")
-                click.echo(f"  Impact Factor: {cm.impact_factor:.2f}")
-                click.echo(f"  Total Outputs: {cm.total_outputs}")
-                if cm.game_signature.primary_game:
-                    click.echo(f"  Primary Game: {cm.game_signature.primary_game}")
-            
+                click.echo("\nCreator Metrics:")
+                creator = result.metrics.creator
+                click.echo(f"  Quality Score: {creator.quality_score:.2f}")
+                click.echo(f"  Game Alignment: {creator.game_alignment:.2f}")
+                click.echo(f"  Impact Factor: {creator.impact_factor:.2f}")
+                click.echo(f"  Total Outputs: {creator.total_outputs}")
+                if creator.game_signature.primary_game:
+                    click.echo(f"  Primary Game: {creator.game_signature.primary_game}")
+
             if result.metrics.consumer:
-                click.echo(f"\nConsumer Metrics:")
-                cm = result.metrics.consumer
-                click.echo(f"  Execution Rate: {cm.execution_rate:.2f}")
-                click.echo(f"  Integration Skill: {cm.integration_skill:.2f}")
-                click.echo(f"  Total Consumed: {cm.total_consumed}")
-                click.echo(f"  Hours Consumed: {cm.hours_consumed:.1f}")
-            
+                click.echo("\nConsumer Metrics:")
+                consumer = result.metrics.consumer
+                click.echo(f"  Execution Rate: {consumer.execution_rate:.2f}")
+                click.echo(f"  Integration Skill: {consumer.integration_skill:.2f}")
+                click.echo(f"  Total Consumed: {consumer.total_consumed}")
+                click.echo(f"  Hours Consumed: {consumer.hours_consumed:.1f}")
+
             if result.cards and result.cards.badges:
                 click.echo(f"\nAchievements ({len(result.cards.badges)}):")
                 for badge in result.cards.badges[:5]:
                     click.echo(f"  {badge.icon} {badge.name}")
                 if len(result.cards.badges) > 5:
                     click.echo(f"  ... and {len(result.cards.badges) - 5} more")
-    
+
     except FileNotFoundError:
         click.echo(f"Error: Repository not found at {path}", err=True)
         raise SystemExit(1)
@@ -142,39 +146,41 @@ def profile(path: str, force: bool, output: Optional[str], as_json: bool) -> Non
 @cli.command()
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--output-dir", "-o", default="./cards", help="Output directory for cards")
-@click.option("--format", "fmt", type=click.Choice(["json", "all"]), default="json", help="Output format")
+@click.option(
+    "--format", "fmt", type=click.Choice(["json", "all"]), default="json", help="Output format"
+)
 def cards(path: str, output_dir: str, fmt: str) -> None:
     """Generate trading cards from profile.
-    
+
     Creates card data files for all applicable card types
     based on the user's current profile state.
-    
+
     Example:
         metaspn cards ./my-content
         metaspn cards ./my-content --output-dir ./my-cards
     """
     from metaspn import compute_profile, generate_cards
-    
+
     try:
         click.echo("Computing profile...")
         result = compute_profile(path)
-        
+
         click.echo("Generating cards...")
         card_list = generate_cards(result)
-        
+
         os.makedirs(output_dir, exist_ok=True)
-        
+
         for card in card_list:
             filename = f"{card.card_type}_{card.card_number}.json"
             filepath = os.path.join(output_dir, filename)
-            
+
             with open(filepath, "w") as f:
                 f.write(card.to_json())
-            
+
             click.echo(f"  Generated: {filename} ({card.rarity})")
-        
+
         click.echo(f"\nGenerated {len(card_list)} cards in {output_dir}")
-    
+
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise SystemExit(1)
@@ -184,47 +190,48 @@ def cards(path: str, output_dir: str, fmt: str) -> None:
 @click.argument("path", type=click.Path(exists=True))
 def stats(path: str) -> None:
     """Show repository statistics.
-    
+
     Displays summary information about the repository
     including activity counts, platform breakdown, and metrics.
-    
+
     Example:
         metaspn stats ./my-content
     """
     from metaspn import compute_profile
     from metaspn.repo import get_repo_info
-    
+
     try:
         info = get_repo_info(path)
         result = compute_profile(path)
-        
+
         click.echo(f"\n{result.name}")
         click.echo("=" * 50)
         click.echo(f"Handle: {result.handle}")
         click.echo(f"Repository: {info['path']}")
         click.echo(f"Created: {info.get('created_at', 'Unknown')}")
         click.echo(f"Activity Files: {info.get('activity_files', 0)}")
-        
-        click.echo(f"\n--- Level & Rarity ---")
+
+        click.echo("\n--- Level & Rarity ---")
         if result.cards:
             click.echo(f"Level: {result.cards.level}")
             click.echo(f"XP: {result.cards.xp} (next level: {result.cards.xp_to_next} XP)")
             click.echo(f"Rarity: {result.cards.rarity}")
-        
+
         if result.lifecycle:
-            click.echo(f"\n--- Lifecycle ---")
+            click.echo("\n--- Lifecycle ---")
             click.echo(f"Phase: {result.lifecycle.phase}")
             click.echo(f"Progress: {result.lifecycle.phase_progress * 100:.0f}%")
             if result.lifecycle.next_phase:
                 click.echo(f"Next Phase: {result.lifecycle.next_phase}")
-        
-        click.echo(f"\n--- Platforms ---")
+
+        click.echo("\n--- Platforms ---")
         for platform in result.platforms:
             role_emoji = {"creator": "C", "consumer": "c", "hybrid": "H"}[platform.role]
-            click.echo(f"  [{role_emoji}] {platform.platform}: "
-                      f"{platform.activity_count} activities")
-        
-        click.echo(f"\n--- Development ---")
+            click.echo(
+                f"  [{role_emoji}] {platform.platform}: " f"{platform.activity_count} activities"
+            )
+
+        click.echo("\n--- Development ---")
         dev = result.metrics.development
         click.echo(f"Total Activities: {dev.total_activities}")
         click.echo(f"Active Days: {dev.active_days}")
@@ -232,37 +239,43 @@ def stats(path: str) -> None:
         click.echo(f"Longest Streak: {dev.streak_longest} days")
         if dev.first_activity:
             click.echo(f"First Activity: {dev.first_activity.strftime('%Y-%m-%d')}")
-        
+
         if result.metrics.creator:
-            cm = result.metrics.creator
-            click.echo(f"\n--- Creator Metrics ---")
-            click.echo(f"Quality: {cm.quality_score:.2f}")
-            click.echo(f"Game Alignment: {cm.game_alignment:.2f}")
-            click.echo(f"Impact Factor: {cm.impact_factor:.2f}")
-            click.echo(f"Consistency: {cm.consistency_score:.2f}")
-            click.echo(f"Total Outputs: {cm.total_outputs}")
-            
+            creator = result.metrics.creator
+            click.echo("\n--- Creator Metrics ---")
+            click.echo(f"Quality: {creator.quality_score:.2f}")
+            click.echo(f"Game Alignment: {creator.game_alignment:.2f}")
+            click.echo(f"Impact Factor: {creator.impact_factor:.2f}")
+            click.echo(f"Consistency: {creator.consistency_score:.2f}")
+            click.echo(f"Total Outputs: {creator.total_outputs}")
+
             # Game signature
-            sig = cm.game_signature
-            games = [("G1", sig.G1), ("G2", sig.G2), ("G3", sig.G3),
-                     ("G4", sig.G4), ("G5", sig.G5), ("G6", sig.G6)]
+            sig = creator.game_signature
+            games = [
+                ("G1", sig.G1),
+                ("G2", sig.G2),
+                ("G3", sig.G3),
+                ("G4", sig.G4),
+                ("G5", sig.G5),
+                ("G6", sig.G6),
+            ]
             top_games = sorted(games, key=lambda x: x[1], reverse=True)[:3]
             click.echo(f"Top Games: {', '.join(f'{g}:{s:.2f}' for g, s in top_games)}")
-        
+
         if result.metrics.consumer:
-            cm = result.metrics.consumer
-            click.echo(f"\n--- Consumer Metrics ---")
-            click.echo(f"Execution Rate: {cm.execution_rate:.2f}")
-            click.echo(f"Integration Skill: {cm.integration_skill:.2f}")
-            click.echo(f"Discernment: {cm.discernment:.2f}")
-            click.echo(f"Total Consumed: {cm.total_consumed}")
-            click.echo(f"Hours Consumed: {cm.hours_consumed:.1f}")
-        
+            consumer = result.metrics.consumer
+            click.echo("\n--- Consumer Metrics ---")
+            click.echo(f"Execution Rate: {consumer.execution_rate:.2f}")
+            click.echo(f"Integration Skill: {consumer.integration_skill:.2f}")
+            click.echo(f"Discernment: {consumer.discernment:.2f}")
+            click.echo(f"Total Consumed: {consumer.total_consumed}")
+            click.echo(f"Hours Consumed: {consumer.hours_consumed:.1f}")
+
         if result.cards and result.cards.badges:
             click.echo(f"\n--- Achievements ({len(result.cards.badges)}) ---")
             for badge in result.cards.badges[:8]:
                 click.echo(f"  {badge.icon} {badge.name}")
-    
+
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise SystemExit(1)
@@ -272,46 +285,46 @@ def stats(path: str) -> None:
 @click.argument("path", type=click.Path(exists=True))
 def validate(path: str) -> None:
     """Validate repository structure.
-    
+
     Checks that the repository has all required directories
     and files, and that the profile.json is valid.
-    
+
     Example:
         metaspn validate ./my-content
     """
-    from metaspn.repo import validate_repo, get_repo_info
+    from metaspn.repo import get_repo_info, validate_repo
     from metaspn.repo.structure import RepoStructure
-    
+
     try:
         click.echo(f"Validating repository at {path}...")
-        
+
         is_valid = validate_repo(path)
-        
+
         if is_valid:
             click.echo("Repository structure: OK")
-            
+
             structure = RepoStructure(path)
-            
+
             # Check directories
             for dir_path in structure.REQUIRED_DIRS:
                 full_path = structure.repo_path / dir_path
                 status = "OK" if full_path.is_dir() else "MISSING"
                 click.echo(f"  {dir_path}: {status}")
-            
+
             # Get repo info
             info = get_repo_info(path)
-            click.echo(f"\nRepository Info:")
+            click.echo("\nRepository Info:")
             click.echo(f"  User ID: {info.get('user_id')}")
             click.echo(f"  Name: {info.get('name')}")
             click.echo(f"  Version: {info.get('version')}")
             click.echo(f"  Activity Files: {info.get('activity_files')}")
-            
-            click.echo(f"\nValidation: PASSED")
+
+            click.echo("\nValidation: PASSED")
         else:
             click.echo("Validation: FAILED", err=True)
             click.echo("Repository structure is invalid or incomplete.", err=True)
             raise SystemExit(1)
-    
+
     except Exception as e:
         click.echo(f"Validation Error: {e}", err=True)
         raise SystemExit(1)
@@ -319,49 +332,54 @@ def validate(path: str) -> None:
 
 @cli.command("export")
 @click.argument("path", type=click.Path(exists=True))
-@click.option("--format", "fmt", type=click.Choice(["json", "csv"]), default="json", help="Export format")
+@click.option(
+    "--format", "fmt", type=click.Choice(["json", "csv"]), default="json", help="Export format"
+)
 @click.option("--output", "-o", required=True, help="Output file path")
-@click.option("--include", multiple=True, help="Include specific sections (profile, activities, cards)")
+@click.option(
+    "--include", multiple=True, help="Include specific sections (profile, activities, cards)"
+)
 def export_data(path: str, fmt: str, output: str, include: tuple) -> None:
     """Export profile data to file.
-    
+
     Exports the computed profile and optionally activities
     and cards to JSON or CSV format.
-    
+
     Example:
         metaspn export ./my-content --format json --output profile.json
         metaspn export ./my-content --format json -o data.json --include profile --include activities
     """
     from metaspn import compute_profile, generate_cards
     from metaspn.repo import load_activities
-    
+
     try:
         sections = set(include) if include else {"profile"}
-        
+
         click.echo("Computing profile...")
         result = compute_profile(path)
-        
+
         export_data_dict: dict = {}
-        
+
         if "profile" in sections or not include:
             export_data_dict["profile"] = result.to_dict()
-        
+
         if "activities" in sections:
             click.echo("Loading activities...")
             activities = load_activities(path)
             export_data_dict["activities"] = [a.to_dict() for a in activities]
-        
+
         if "cards" in sections:
             click.echo("Generating cards...")
             card_list = generate_cards(result)
             export_data_dict["cards"] = [c.to_dict() for c in card_list]
-        
+
         if fmt == "json":
             with open(output, "w") as f:
                 json.dump(export_data_dict, f, indent=2, default=str)
         elif fmt == "csv":
             # CSV export - flatten profile data
             import csv
+
             with open(output, "w", newline="") as f:
                 if "activities" in export_data_dict:
                     activities_list = export_data_dict["activities"]
@@ -382,9 +400,9 @@ def export_data(path: str, fmt: str, output: str, include: tuple) -> None:
                     writer = csv.DictWriter(f, fieldnames=flat_data.keys())
                     writer.writeheader()
                     writer.writerow(flat_data)
-        
+
         click.echo(f"\nExported to {output}")
-    
+
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise SystemExit(1)
@@ -410,25 +428,26 @@ def add(
     timestamp: Optional[str],
 ) -> None:
     """Add an activity to the repository.
-    
+
     Adds a new activity record to the appropriate platform
     directory in the repository.
-    
+
     Example:
         metaspn add ./my-content podcast --title "Episode 1" --duration 3600
         metaspn add ./my-content blog --title "My Post" --content "..."
     """
     from metaspn.core.profile import Activity
     from metaspn.repo import add_activity
-    
+
     try:
         # Parse timestamp
         if timestamp:
             from metaspn.utils.dates import parse_date
+
             ts = parse_date(timestamp)
         else:
             ts = datetime.now()
-        
+
         activity = Activity(
             timestamp=ts,
             platform=platform,
@@ -438,13 +457,13 @@ def add(
             url=url,
             duration_seconds=duration,
         )
-        
+
         file_path = add_activity(path, activity)
         click.echo(f"Added activity: {title}")
         click.echo(f"  Platform: {platform}")
         click.echo(f"  Type: {activity_type}")
         click.echo(f"  Saved to: {file_path}")
-    
+
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise SystemExit(1)
@@ -456,23 +475,25 @@ def add(
 @click.option("--reload", is_flag=True, help="Enable auto-reload for development")
 def serve(host: str, port: int, reload: bool) -> None:
     """Start the API server.
-    
+
     Runs the FastAPI server for programmatic access
     to MetaSPN functionality.
-    
+
     Example:
         metaspn serve
         metaspn serve --port 8080 --host 0.0.0.0
     """
     try:
         import uvicorn
-        from metaspn.api.server import app
-        
-        click.echo(f"Starting MetaSPN API server...")
+
+        # Verify the server module can be imported
+        from metaspn.api import server as _  # noqa: F401
+
+        click.echo("Starting MetaSPN API server...")
         click.echo(f"  URL: http://{host}:{port}")
         click.echo(f"  Docs: http://{host}:{port}/docs")
-        click.echo(f"  Press Ctrl+C to stop\n")
-        
+        click.echo("  Press Ctrl+C to stop\n")
+
         uvicorn.run(
             "metaspn.api.server:app",
             host=host,

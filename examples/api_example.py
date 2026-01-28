@@ -11,17 +11,16 @@ you would run the server separately.
 """
 
 import asyncio
-import tempfile
+
+# Check if httpx is available
+import importlib.util
 import shutil
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Check if httpx is available
-try:
-    import httpx
-    HAS_HTTPX = True
-except ImportError:
-    HAS_HTTPX = False
+HAS_HTTPX = importlib.util.find_spec("httpx") is not None
+if not HAS_HTTPX:
     print("Note: Install httpx to run the API example: pip install httpx")
 
 
@@ -29,47 +28,51 @@ async def main():
     if not HAS_HTTPX:
         print("httpx not installed. Skipping API example.")
         return
-    
+
     from metaspn import init_repo
     from metaspn.core.profile import Activity
     from metaspn.repo import add_activity
-    
+
     # Create a temporary directory for this example
     temp_dir = Path(tempfile.mkdtemp())
     repo_path = temp_dir / "api-example"
-    
+
     try:
         print("MetaSPN API Usage Example")
         print("=" * 50)
-        
+
         # Set up a test repository
         print("\n1. Setting up test repository...")
-        init_repo(str(repo_path), {
-            "user_id": "api_user",
-            "name": "API User",
-            "handle": "@api_user",
-        })
-        
+        init_repo(
+            str(repo_path),
+            {
+                "user_id": "api_user",
+                "name": "API User",
+                "handle": "@api_user",
+            },
+        )
+
         # Add some activities
         for i in range(5):
             activity = Activity(
-                timestamp=datetime.now() - timedelta(days=i*5),
+                timestamp=datetime.now() - timedelta(days=i * 5),
                 platform="blog",
                 activity_type="create",
                 title=f"Blog Post {i+1}",
                 content="Content " * 100,
             )
             add_activity(str(repo_path), activity)
-        
+
         print(f"   Created repository at: {repo_path}")
-        
+
         # Note: In a real scenario, you would start the server first:
         # metaspn serve --port 8000
-        # 
+        #
         # Then make requests to it. Here we'll show the API structure.
-        
+
         print("\n2. API Endpoints (when server is running):")
-        print("""
+        print(
+            """
    GET  /                  - API information
    GET  /health            - Health check
    POST /profile           - Compute profile from repo path
@@ -81,10 +84,12 @@ async def main():
    POST /activity          - Add an activity
    GET  /activities        - List activities
    GET  /stats             - Get repository statistics
-""")
-        
+"""
+        )
+
         print("\n3. Example API calls (using httpx):")
-        print("""
+        print(
+            """
 # Start the server
 # $ metaspn serve --port 8000
 
@@ -96,7 +101,7 @@ async with httpx.AsyncClient(base_url="http://localhost:8000") as client:
     response = await client.get("/health")
     print(response.json())
     # {"status": "healthy", "version": "0.1.0", ...}
-    
+
     # Compute profile
     response = await client.post("/profile", json={
         "repo_path": "/path/to/repo",
@@ -104,7 +109,7 @@ async with httpx.AsyncClient(base_url="http://localhost:8000") as client:
     })
     profile = response.json()
     print(f"Level: {profile['cards']['level']}")
-    
+
     # Generate cards
     response = await client.post("/cards", json={
         "repo_path": "/path/to/repo"
@@ -112,7 +117,7 @@ async with httpx.AsyncClient(base_url="http://localhost:8000") as client:
     cards = response.json()
     for card in cards:
         print(f"{card['card_type']}: {card['rarity']}")
-    
+
     # Add activity
     response = await client.post("/activity", json={
         "repo_path": "/path/to/repo",
@@ -122,12 +127,13 @@ async with httpx.AsyncClient(base_url="http://localhost:8000") as client:
         "duration_seconds": 3600
     })
     print(response.json())
-""")
-        
+"""
+        )
+
         print("\n" + "=" * 50)
         print("See the API documentation at http://localhost:8000/docs")
         print("when the server is running.")
-        
+
     finally:
         # Clean up
         shutil.rmtree(temp_dir, ignore_errors=True)

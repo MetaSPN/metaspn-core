@@ -1,18 +1,26 @@
 """Pytest configuration and fixtures for MetaSPN tests."""
 
-import pytest
-import tempfile
-import shutil
 import json
-from pathlib import Path
+import shutil
+import tempfile
+from collections.abc import Generator
 from datetime import datetime, timedelta
-from typing import Generator
+from pathlib import Path
 
-from metaspn.core.profile import Activity, UserProfile, PlatformPresence
-from metaspn.core.metrics import GameSignature, CreatorMetrics, ConsumerMetrics, DevelopmentMetrics, ProfileMetrics, Trajectory
-from metaspn.core.state_machine import LifecycleState
+import pytest
+
 from metaspn.core.card import CardData
 from metaspn.core.level import Badge
+from metaspn.core.metrics import (
+    ConsumerMetrics,
+    CreatorMetrics,
+    DevelopmentMetrics,
+    GameSignature,
+    ProfileMetrics,
+    Trajectory,
+)
+from metaspn.core.profile import Activity, PlatformPresence, UserProfile
+from metaspn.core.state_machine import LifecycleState
 from metaspn.repo import init_repo
 
 
@@ -28,14 +36,17 @@ def temp_dir() -> Generator[Path, None, None]:
 def sample_repo(temp_dir: Path) -> Path:
     """Create a sample MetaSPN repository with test data."""
     repo_path = temp_dir / "test_repo"
-    
+
     # Initialize repo
-    init_repo(str(repo_path), {
-        "user_id": "test_user",
-        "name": "Test User",
-        "handle": "@test_user",
-    })
-    
+    init_repo(
+        str(repo_path),
+        {
+            "user_id": "test_user",
+            "name": "Test User",
+            "handle": "@test_user",
+        },
+    )
+
     # Add sample activities
     activities = [
         {
@@ -76,16 +87,16 @@ def sample_repo(temp_dir: Path) -> Path:
             "duration_seconds": 1800,
         },
     ]
-    
+
     for i, activity_data in enumerate(activities):
         platform = activity_data["platform"]
         platform_dir = repo_path / "sources" / platform
         platform_dir.mkdir(parents=True, exist_ok=True)
-        
+
         filename = f"activity_{i:03d}.json"
         with open(platform_dir / filename, "w") as f:
             json.dump(activity_data, f)
-    
+
     return repo_path
 
 
@@ -93,13 +104,16 @@ def sample_repo(temp_dir: Path) -> Path:
 def empty_repo(temp_dir: Path) -> Path:
     """Create an empty MetaSPN repository."""
     repo_path = temp_dir / "empty_repo"
-    
-    init_repo(str(repo_path), {
-        "user_id": "empty_user",
-        "name": "Empty User",
-        "handle": "@empty_user",
-    })
-    
+
+    init_repo(
+        str(repo_path),
+        {
+            "user_id": "empty_user",
+            "name": "Empty User",
+            "handle": "@empty_user",
+        },
+    )
+
     return repo_path
 
 

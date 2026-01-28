@@ -32,7 +32,16 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -e ".[dev]"
 ```
 
-4. Verify installation:
+4. Install pre-commit hooks:
+
+```bash
+pre-commit install
+```
+
+This ensures all code is properly formatted and linted before each commit.
+Commits will be blocked if linting fails.
+
+5. Verify installation:
 
 ```bash
 metaspn --version
@@ -73,6 +82,28 @@ mypy metaspn
 ```
 
 All public functions should have type hints.
+
+### Pre-commit Hooks
+
+We use pre-commit to run all checks automatically before each commit:
+
+```bash
+# Run all hooks manually
+pre-commit run --all-files
+
+# Run on staged files only
+pre-commit run
+```
+
+The following hooks run automatically:
+- **Black** - code formatting
+- **Ruff** - linting
+- **MyPy** - type checking
+- **Bandit** - security checks
+- **General hooks** - trailing whitespace, file endings, YAML/JSON validation
+
+If a commit is blocked, fix the issues and try again. Most formatting issues
+are auto-fixed by the hooks.
 
 ## Testing
 
@@ -115,7 +146,7 @@ def test_activity_serialization(self, sample_activity: Activity):
     """Test that Activity can be serialized and deserialized."""
     data = sample_activity.to_dict()
     restored = Activity.from_dict(data)
-    
+
     assert restored.platform == sample_activity.platform
     assert restored.title == sample_activity.title
 ```
@@ -232,17 +263,17 @@ def compute_profile(
     force_recompute: bool = False,
 ) -> UserProfile:
     """Compute complete user profile from repository.
-    
+
     Args:
         repo_path: Path to MetaSPN content repository
         force_recompute: If True, ignore cached results
-    
+
     Returns:
         Complete UserProfile object with all computed metrics
-    
+
     Raises:
         ValueError: If repo_path is invalid or repo is malformed
-    
+
     Example:
         >>> profile = compute_profile("./my-content")
         >>> print(f"Level: {profile.cards.level}")
