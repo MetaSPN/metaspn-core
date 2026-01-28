@@ -66,22 +66,49 @@ def init(
 @click.option("--force", is_flag=True, help="Force recompute (ignore cache)")
 @click.option("--output", "-o", default=None, help="Output file for JSON")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
-def profile(path: str, force: bool, output: Optional[str], as_json: bool) -> None:
+@click.option("--no-enhance", is_flag=True, help="Skip enhancement layer (use embedded scores)")
+@click.option("--recompute-enhance", is_flag=True, help="Recompute all enhancements")
+def profile(
+    path: str,
+    force: bool,
+    output: Optional[str],
+    as_json: bool,
+    no_enhance: bool,
+    recompute_enhance: bool,
+) -> None:
     """Compute user profile from repository.
 
     Analyzes all activities in the repository and computes
     metrics, lifecycle state, level, rarity, and achievements.
 
+    By default, uses the enhancement layer (artifacts/enhancements/)
+    to store and load quality scores and game signatures separately
+    from source data.
+
     Example:
         metaspn profile ./my-content
         metaspn profile ./my-content --force --json
+        metaspn profile ./my-content --no-enhance     # Skip enhancement layer
+        metaspn profile ./my-content --recompute-enhance  # Recompute all enhancements
     """
     from metaspn import compute_profile
+    from metaspn.repo.enhancement_store import EnhancementStore
 
     try:
+        # Handle enhancement recomputation
+        if recompute_enhance and not no_enhance:
+            click.echo("Clearing existing enhancements...")
+            store = EnhancementStore(path)
+            store.clear_enhancements()
+
         click.echo("Computing profile...")
 
-        result = compute_profile(path, force_recompute=force)
+        result = compute_profile(
+            path,
+            force_recompute=force,
+            use_enhancement_store=not no_enhance,
+            compute_enhancements=not no_enhance,
+        )
 
         if as_json or output:
             json_output = result.to_json()
@@ -463,6 +490,99 @@ def add(
         click.echo(f"  Platform: {platform}")
         click.echo(f"  Type: {activity_type}")
         click.echo(f"  Saved to: {file_path}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--force", is_flag=True, help="Force recompute all enhancements")
+@click.option("--clear", is_flag=True, help="Clear all enhancements without recomputing")
+@click.option("--status", "show_status", is_flag=True, help="Show enhancement status only")
+def enhance(path: str, force: bool, clear: bool, show_status: bool) -> None:
+    """Manage enhancement layers for a repository.
+
+    Computes and stores quality scores and game signatures separately
+    from source data. Enhancements are stored in artifacts/enhancements/
+    and can be recomputed without modifying source files.
+
+    Example:
+        metaspn enhance ./my-content              # Compute missing enhancements
+        metaspn enhance ./my-content --force      # Recompute all enhancements
+        metaspn enhance ./my-content --status     # Show enhancement status
+        metaspn enhance ./my-content --clear      # Clear all enhancements
+    """
+    from metaspn.core.profile import compute_and_store_enhancements
+    from metaspn.repo.enhancement_store import EnhancementStore
+    from metaspn.repo.reader import load_activities
+    from metaspn.repo.structure import validate_repo
+
+    try:
+        if not validate_repo(path):
+            click.echo(f"Error: Invalid repository at {path}", err=True)
+            raise SystemExit(1)
+
+        store = EnhancementStore(path)
+
+        if clear:
+            click.echo("Clearing all enhancements...")
+            store.clear_enhancements()
+            click.echo("Enhancements cleared.")
+            return
+
+        if show_status:
+            activities = load_activities(path)
+            quality_map = store.load_quality_scores()
+            game_map = store.load_game_signatures()
+            embedding_map = store.load_embeddings()
+
+            click.echo(f"\nEnhancement Status for {path}")
+            click.echo("=" * 50)
+            click.echo(f"Total Activities: {len(activities)}")
+            click.echo("\nQuality Scores:")
+            click.echo(f"  File exists: {store.has_quality_scores()}")
+            click.echo(f"  Records: {len(quality_map)}")
+            click.echo(f"  Coverage: {len(quality_map)}/{len(activities)} activities")
+
+            click.echo("\nGame Signatures:")
+            click.echo(f"  File exists: {store.has_game_signatures()}")
+            click.echo(f"  Records: {len(game_map)}")
+            click.echo(f"  Coverage: {len(game_map)}/{len(activities)} activities")
+
+            click.echo("\nEmbeddings:")
+            click.echo(f"  File exists: {store.has_embeddings()}")
+            click.echo(f"  Records: {len(embedding_map)}")
+            click.echo(f"  Coverage: {len(embedding_map)}/{len(activities)} activities")
+
+            # Show missing
+            missing_quality = len(activities) - len(quality_map)
+            missing_games = len(activities) - len(game_map)
+            if missing_quality > 0 or missing_games > 0:
+                click.echo("\nMissing enhancements:")
+                if missing_quality > 0:
+                    click.echo(f"  Quality scores: {missing_quality}")
+                if missing_games > 0:
+                    click.echo(f"  Game signatures: {missing_games}")
+                click.echo("\nRun 'metaspn enhance' to compute missing enhancements.")
+            else:
+                click.echo("\nAll enhancements up to date.")
+            return
+
+        # Compute enhancements
+        click.echo("Computing enhancements...")
+        result = compute_and_store_enhancements(path, force_recompute=force)
+
+        click.echo("\nEnhancements computed:")
+        click.echo(f"  Quality scores: {result['quality_scores']}")
+        click.echo(f"  Game signatures: {result['game_signatures']}")
+        click.echo(f"  Total activities: {result['total_activities']}")
+
+        if result["quality_scores"] == 0 and result["game_signatures"] == 0:
+            click.echo("\nAll enhancements were already up to date.")
+        else:
+            click.echo("\nEnhancements saved to artifacts/enhancements/")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)

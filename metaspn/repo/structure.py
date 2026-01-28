@@ -17,12 +17,13 @@ class RepoStructure:
             config.json       # Repository configuration
             cache/            # Cached computations
         sources/
-            podcast/          # Platform-specific source data
+            podcast/          # Platform-specific source data (append-only)
             youtube/
             twitter/
             blog/
         artifacts/
             computed/         # Computed activity data with scores
+            enhancements/     # Enhancement layers (quality_scores, game_signatures, embeddings)
         reports/
             profiles/         # Cached profile computations
             cards/            # Generated card data
@@ -35,6 +36,14 @@ class RepoStructure:
         artifacts/
             podcast/          # Created content (JSONL)
             blog/
+
+    Enhancement Layer Architecture:
+        sources/ contains raw, append-only data that is never modified.
+        artifacts/enhancements/ contains computed enhancement layers:
+            - quality_scores.jsonl: Quality scores per activity
+            - game_signatures.jsonl: Game signature classifications
+            - embeddings.jsonl: Vector embeddings for semantic search
+        Each enhancement record references its source by activity_id.
     """
 
     # Required directories for standard layout
@@ -48,6 +57,7 @@ class RepoStructure:
         "sources/blog",
         "artifacts",
         "artifacts/computed",
+        "artifacts/enhancements",
         "reports",
         "reports/profiles",
         "reports/cards",
@@ -110,6 +120,30 @@ class RepoStructure:
     def reports_dir(self) -> Path:
         """Path to reports directory."""
         return self.repo_path / "reports"
+
+    @property
+    def enhancements_dir(self) -> Path:
+        """Path to enhancements directory (artifacts/enhancements/).
+
+        This directory contains computed enhancement layers that
+        reference source activities by activity_id.
+        """
+        return self.artifacts_dir / "enhancements"
+
+    @property
+    def quality_scores_path(self) -> Path:
+        """Path to quality scores enhancement file."""
+        return self.enhancements_dir / "quality_scores.jsonl"
+
+    @property
+    def game_signatures_path(self) -> Path:
+        """Path to game signatures enhancement file."""
+        return self.enhancements_dir / "game_signatures.jsonl"
+
+    @property
+    def embeddings_path(self) -> Path:
+        """Path to embeddings enhancement file."""
+        return self.enhancements_dir / "embeddings.jsonl"
 
     def create_structure(self) -> None:
         """Create the repository directory structure."""
@@ -310,6 +344,7 @@ def init_repo(path: str, user_info: dict) -> None:
         gitkeep.touch()
 
     (structure.artifacts_dir / "computed" / ".gitkeep").touch()
+    (structure.enhancements_dir / ".gitkeep").touch()
     (structure.reports_dir / "profiles" / ".gitkeep").touch()
     (structure.reports_dir / "cards" / ".gitkeep").touch()
 

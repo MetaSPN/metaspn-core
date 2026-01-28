@@ -1,9 +1,11 @@
 """Game analyzer for MetaSPN using ML classification."""
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 from founder_game_classifier import GameClassifier
 
+from metaspn.core.enhancements import GAME_SIGNATURE_ALGORITHM_VERSION, GameSignatureEnhancement
 from metaspn.core.metrics import GameSignature
 
 if TYPE_CHECKING:
@@ -200,3 +202,116 @@ class GameAnalyzer:
             }
 
         return self._classifier.predict(text)
+
+    def compute_enhancements(
+        self,
+        activities: list["Activity"],
+        computed_at: Optional[datetime] = None,
+        batch_size: int = 32,
+    ) -> list[GameSignatureEnhancement]:
+        """Compute game signature enhancements for all activities.
+
+        Creates a GameSignatureEnhancement for each activity, suitable for
+        storing in the enhancement layer. Uses batch processing for efficiency.
+
+        Args:
+            activities: List of activities to analyze
+            computed_at: Timestamp for when computation occurred (defaults to now)
+            batch_size: Number of texts to process in each batch
+
+        Returns:
+            List of GameSignatureEnhancement records
+        """
+        if computed_at is None:
+            computed_at = datetime.now()
+
+        enhancements = []
+
+        # Process activities with text
+        activities_with_text = []
+        for activity in activities:
+            if activity.activity_id and self._get_text(activity):
+                activities_with_text.append(activity)
+
+        if not activities_with_text:
+            return enhancements
+
+        # Extract texts for batch processing
+        texts = [self._get_text(a) for a in activities_with_text]
+
+        # Process in batches
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i : i + batch_size]
+            batch_activities = activities_with_text[i : i + batch_size]
+
+            # Get batch predictions
+            batch_results = self._classifier.predict_batch(batch_texts)
+
+            for activity, result in zip(batch_activities, batch_results):
+                probs = result.get("probabilities", {})
+                confidence = result.get("confidence", 0.0)
+
+                game_signature = GameSignature(
+                    G1=probs.get("G1", 0.0),
+                    G2=probs.get("G2", 0.0),
+                    G3=probs.get("G3", 0.0),
+                    G4=probs.get("G4", 0.0),
+                    G5=probs.get("G5", 0.0),
+                    G6=probs.get("G6", 0.0),
+                )
+
+                enhancement = GameSignatureEnhancement(
+                    activity_id=activity.activity_id,
+                    computed_at=computed_at,
+                    algorithm_version=GAME_SIGNATURE_ALGORITHM_VERSION,
+                    game_signature=game_signature,
+                    confidence=confidence,
+                )
+                enhancements.append(enhancement)
+
+        return enhancements
+
+    def compute_enhancement_for_activity(
+        self,
+        activity: "Activity",
+        computed_at: Optional[datetime] = None,
+    ) -> Optional[GameSignatureEnhancement]:
+        """Compute game signature enhancement for a single activity.
+
+        Args:
+            activity: Activity to analyze
+            computed_at: Timestamp for when computation occurred
+
+        Returns:
+            GameSignatureEnhancement or None if activity has no text/ID
+        """
+        if not activity.activity_id:
+            return None
+
+        text = self._get_text(activity)
+        if not text:
+            return None
+
+        if computed_at is None:
+            computed_at = datetime.now()
+
+        result = self._classifier.predict(text)
+        probs = result.get("probabilities", {})
+        confidence = result.get("confidence", 0.0)
+
+        game_signature = GameSignature(
+            G1=probs.get("G1", 0.0),
+            G2=probs.get("G2", 0.0),
+            G3=probs.get("G3", 0.0),
+            G4=probs.get("G4", 0.0),
+            G5=probs.get("G5", 0.0),
+            G6=probs.get("G6", 0.0),
+        )
+
+        return GameSignatureEnhancement(
+            activity_id=activity.activity_id,
+            computed_at=computed_at,
+            algorithm_version=GAME_SIGNATURE_ALGORITHM_VERSION,
+            game_signature=game_signature,
+            confidence=confidence,
+        )

@@ -1,15 +1,27 @@
 """Repository writer for MetaSPN."""
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from metaspn.repo.structure import RepoStructure
 
 if TYPE_CHECKING:
     from metaspn.core.card import Card
+    from metaspn.core.enhancements import EnhancementRecord
     from metaspn.core.profile import Activity, UserProfile
+
+
+@runtime_checkable
+class Serializable(Protocol):
+    """Protocol for objects that can be serialized to dict."""
+
+    def to_dict(self) -> dict:
+        """Serialize to dictionary."""
+        ...
 
 
 class RepoWriter:
@@ -177,6 +189,136 @@ class RepoWriter:
         with open(self.structure.profile_path, "w") as f:
             json.dump(profile, f, indent=2)
 
+    def append_jsonl(self, path: Path, record: Serializable) -> Path:
+        """Append a single record to a JSONL file.
+
+        Atomic append operation - writes to a new line at end of file.
+        Creates the file if it doesn't exist.
+
+        Args:
+            path: Path to JSONL file
+            record: Object with to_dict() method to serialize
+
+        Returns:
+            Path to the JSONL file
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Append mode with newline
+        with open(path, "a") as f:
+            f.write(json.dumps(record.to_dict()) + "\n")
+
+        return path
+
+    def write_jsonl(
+        self,
+        path: Path,
+        records: list[Serializable],
+        atomic: bool = True,
+    ) -> Path:
+        """Write multiple records to a JSONL file.
+
+        Overwrites existing file. Use atomic=True (default) for
+        safe writes via temp file + rename.
+
+        Args:
+            path: Path to JSONL file
+            records: List of objects with to_dict() method
+            atomic: If True, write to temp file then rename
+
+        Returns:
+            Path to the JSONL file
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        if atomic:
+            # Write to temp file in same directory, then rename
+            fd, temp_path = tempfile.mkstemp(
+                suffix=".jsonl.tmp",
+                dir=path.parent,
+            )
+            try:
+                with os.fdopen(fd, "w") as f:
+                    for record in records:
+                        f.write(json.dumps(record.to_dict()) + "\n")
+                # Atomic rename
+                os.replace(temp_path, path)
+            except Exception:
+                # Clean up temp file on error
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                raise
+        else:
+            with open(path, "w") as f:
+                for record in records:
+                    f.write(json.dumps(record.to_dict()) + "\n")
+
+        return path
+
+    def write_enhancements(
+        self,
+        enhancement_type: str,
+        records: list["EnhancementRecord"],
+    ) -> Path:
+        """Write enhancement records to the appropriate layer file.
+
+        Args:
+            enhancement_type: Type of enhancement (quality_scores, game_signatures, embeddings)
+            records: List of enhancement records to write
+
+        Returns:
+            Path to the enhancement file
+        """
+        # Map enhancement types to file names
+        file_map = {
+            "quality_scores": "quality_scores.jsonl",
+            "game_signatures": "game_signatures.jsonl",
+            "embeddings": "embeddings.jsonl",
+        }
+
+        if enhancement_type not in file_map:
+            raise ValueError(
+                f"Unknown enhancement type: {enhancement_type}. "
+                f"Expected one of: {list(file_map.keys())}"
+            )
+
+        # Write to artifacts/enhancements/
+        enhancements_dir = self.structure.artifacts_dir / "enhancements"
+        file_path = enhancements_dir / file_map[enhancement_type]
+
+        return self.write_jsonl(file_path, records)
+
+    def append_enhancement(
+        self,
+        enhancement_type: str,
+        record: "EnhancementRecord",
+    ) -> Path:
+        """Append a single enhancement record to the appropriate layer file.
+
+        Args:
+            enhancement_type: Type of enhancement (quality_scores, game_signatures, embeddings)
+            record: Enhancement record to append
+
+        Returns:
+            Path to the enhancement file
+        """
+        file_map = {
+            "quality_scores": "quality_scores.jsonl",
+            "game_signatures": "game_signatures.jsonl",
+            "embeddings": "embeddings.jsonl",
+        }
+
+        if enhancement_type not in file_map:
+            raise ValueError(
+                f"Unknown enhancement type: {enhancement_type}. "
+                f"Expected one of: {list(file_map.keys())}"
+            )
+
+        enhancements_dir = self.structure.artifacts_dir / "enhancements"
+        file_path = enhancements_dir / file_map[enhancement_type]
+
+        return self.append_jsonl(file_path, record)
+
 
 def save_activity(repo_path: str, activity: "Activity") -> Path:
     """Save an activity to the repository.
@@ -233,3 +375,53 @@ def cache_profile(repo_path: str, profile: "UserProfile") -> Path:
     """
     writer = RepoWriter(repo_path)
     return writer.cache_profile(profile)
+
+
+def write_enhancements(
+    repo_path: str,
+    enhancement_type: str,
+    records: list["EnhancementRecord"],
+) -> Path:
+    """Write enhancement records to the repository.
+
+    Convenience function for writing enhancements.
+
+    Args:
+        repo_path: Path to MetaSPN repository
+        enhancement_type: Type of enhancement (quality_scores, game_signatures, embeddings)
+        records: List of enhancement records to write
+
+    Returns:
+        Path to the enhancement file
+
+    Example:
+        >>> from metaspn.core.enhancements import QualityScoreEnhancement
+        >>> records = [QualityScoreEnhancement(
+        ...     activity_id="podcast_2024-01-15",
+        ...     quality_score=0.85
+        ... )]
+        >>> write_enhancements("./my-content", "quality_scores", records)
+    """
+    writer = RepoWriter(repo_path)
+    return writer.write_enhancements(enhancement_type, records)
+
+
+def append_enhancement(
+    repo_path: str,
+    enhancement_type: str,
+    record: "EnhancementRecord",
+) -> Path:
+    """Append a single enhancement record to the repository.
+
+    Convenience function for appending a single enhancement.
+
+    Args:
+        repo_path: Path to MetaSPN repository
+        enhancement_type: Type of enhancement (quality_scores, game_signatures, embeddings)
+        record: Enhancement record to append
+
+    Returns:
+        Path to the enhancement file
+    """
+    writer = RepoWriter(repo_path)
+    return writer.append_enhancement(enhancement_type, record)

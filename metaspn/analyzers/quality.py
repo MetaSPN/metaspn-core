@@ -1,7 +1,9 @@
 """Quality analyzer for MetaSPN."""
 
-from typing import TYPE_CHECKING
+from datetime import datetime
+from typing import TYPE_CHECKING, Optional
 
+from metaspn.core.enhancements import QUALITY_ALGORITHM_VERSION, QualityScoreEnhancement
 from metaspn.utils.stats import clamp, mean, std_dev
 
 if TYPE_CHECKING:
@@ -274,3 +276,120 @@ class QualityAnalyzer:
             "depth": self._compute_depth_score(activities),
             "sample_size": len(activities),
         }
+
+    def compute_enhancements(
+        self,
+        activities: list["Activity"],
+        computed_at: Optional[datetime] = None,
+    ) -> list[QualityScoreEnhancement]:
+        """Compute quality score enhancements for all activities.
+
+        Creates a QualityScoreEnhancement for each activity, suitable for
+        storing in the enhancement layer.
+
+        Args:
+            activities: List of activities to analyze
+            computed_at: Timestamp for when computation occurred (defaults to now)
+
+        Returns:
+            List of QualityScoreEnhancement records
+        """
+        if computed_at is None:
+            computed_at = datetime.now()
+
+        enhancements = []
+
+        for activity in activities:
+            # Skip if activity has no ID
+            if not activity.activity_id:
+                continue
+
+            # Compute individual component scores for this activity
+            content_score = self._compute_activity_content_score(activity)
+            depth_score = self._compute_activity_depth_score(activity)
+
+            # For individual activities, consistency doesn't apply
+            # Use a default value
+            consistency_score = 0.5
+
+            # Weighted average for overall quality
+            quality_score = clamp(
+                content_score * self.content_weight
+                + consistency_score * self.consistency_weight
+                + depth_score * self.depth_weight,
+                0.0,
+                1.0,
+            )
+
+            enhancement = QualityScoreEnhancement(
+                activity_id=activity.activity_id,
+                computed_at=computed_at,
+                algorithm_version=QUALITY_ALGORITHM_VERSION,
+                quality_score=quality_score,
+                content_score=content_score,
+                consistency_score=consistency_score,
+                depth_score=depth_score,
+            )
+            enhancements.append(enhancement)
+
+        return enhancements
+
+    def _compute_activity_content_score(self, activity: "Activity") -> float:
+        """Compute content score for a single activity."""
+        score = 0.5  # Default
+
+        # Content length
+        if activity.content:
+            length = len(activity.content)
+            if length >= self.IDEAL_CONTENT_LENGTH:
+                score = 1.0
+            elif length >= self.MIN_CONTENT_LENGTH:
+                score = length / self.IDEAL_CONTENT_LENGTH
+            else:
+                score = length / self.MIN_CONTENT_LENGTH * 0.5
+
+        # Duration (for media content)
+        elif activity.duration_seconds:
+            if activity.duration_seconds >= self.IDEAL_DURATION:
+                score = 1.0
+            elif activity.duration_seconds >= self.MIN_DURATION:
+                score = activity.duration_seconds / self.IDEAL_DURATION
+            else:
+                score = 0.3
+
+        return score
+
+    def _compute_activity_depth_score(self, activity: "Activity") -> float:
+        """Compute depth score for a single activity."""
+        depth_signals = []
+
+        # Content depth
+        if activity.content:
+            word_count = len(activity.content.split())
+            if word_count >= 1000:
+                depth_signals.append(1.0)
+            elif word_count >= 500:
+                depth_signals.append(0.8)
+            elif word_count >= 200:
+                depth_signals.append(0.6)
+            else:
+                depth_signals.append(0.4)
+
+        # Duration depth
+        if activity.duration_seconds:
+            if activity.duration_seconds >= 3600:  # 1 hour+
+                depth_signals.append(1.0)
+            elif activity.duration_seconds >= 1800:  # 30 min+
+                depth_signals.append(0.8)
+            elif activity.duration_seconds >= 600:  # 10 min+
+                depth_signals.append(0.6)
+            else:
+                depth_signals.append(0.4)
+
+        # URL presence suggests external resource
+        if activity.url:
+            depth_signals.append(0.6)
+
+        if depth_signals:
+            return mean(depth_signals)
+        return 0.5

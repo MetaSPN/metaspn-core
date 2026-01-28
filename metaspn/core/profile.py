@@ -13,8 +13,11 @@ from metaspn.core.metrics import (
 )
 
 if TYPE_CHECKING:
+    from metaspn.analyzers.games import GameAnalyzer
+    from metaspn.analyzers.quality import QualityAnalyzer
     from metaspn.core.card import CardData
     from metaspn.core.state_machine import LifecycleState
+    from metaspn.repo.enhancement_store import EnhancedActivity, EnhancementStore
 
 
 @dataclass
@@ -331,6 +334,8 @@ def compute_profile(
     repo_path: str,
     force_recompute: bool = False,
     cache_results: bool = True,
+    use_enhancement_store: bool = True,
+    compute_enhancements: bool = True,
 ) -> UserProfile:
     """Compute complete user profile from repository.
 
@@ -338,10 +343,18 @@ def compute_profile(
     activity data from the repository, computes metrics, determines
     lifecycle phase, calculates level and rarity, and generates card data.
 
+    The enhancement layer architecture separates raw source data from
+    computed enhancements (quality scores, game signatures). When
+    use_enhancement_store=True, enhancements are loaded from/saved to
+    artifacts/enhancements/ instead of being embedded in activities.
+
     Args:
         repo_path: Path to MetaSPN content repository
         force_recompute: If True, ignore cached results and recompute
         cache_results: If True, cache computed results in reports/
+        use_enhancement_store: If True, use enhancement layer for scores/signatures
+        compute_enhancements: If True and use_enhancement_store is True, compute
+            and save missing enhancements
 
     Returns:
         Complete UserProfile object with all computed metrics
@@ -362,6 +375,7 @@ def compute_profile(
     from metaspn.core.card import CardData
     from metaspn.core.level import AchievementSystem, LevelCalculator, RarityCalculator
     from metaspn.core.state_machine import LifecycleStateMachine
+    from metaspn.repo.enhancement_store import EnhancementStore
     from metaspn.repo.reader import load_activities, load_minimal_state, try_load_cached_profile
     from metaspn.repo.structure import validate_repo
     from metaspn.repo.writer import cache_profile as write_cache
@@ -385,29 +399,65 @@ def compute_profile(
     # 5. Detect platforms and compute platform presences
     platforms = _compute_platform_presences(activities)
 
-    # 6. Compute metrics
+    # 6. Initialize analyzers
     quality_analyzer = QualityAnalyzer()
     game_analyzer = GameAnalyzer()
     trajectory_analyzer = TrajectoryAnalyzer()
     impact_analyzer = ImpactAnalyzer()
 
+    # 6a. Handle enhancement store
+    enhancement_store = None
+    enhanced_activities = None
+    if use_enhancement_store:
+        enhancement_store = EnhancementStore(repo_path)
+
+        # Compute and store missing enhancements if requested
+        if compute_enhancements:
+            _compute_and_store_enhancements(
+                activities,
+                quality_analyzer,
+                game_analyzer,
+                enhancement_store,
+            )
+
+        # Load enhanced activities (activities joined with their enhancements)
+        enhanced_activities = enhancement_store.get_all_enhanced(
+            activities, load_quality=True, load_games=True, load_embeddings=False
+        )
+
     # Split activities by type
     create_activities = [a for a in activities if a.activity_type == "create"]
     consume_activities = [a for a in activities if a.activity_type == "consume"]
 
+    # For enhanced activities, also split them
+    enhanced_create = None
+    enhanced_consume = None
+    if enhanced_activities:
+        enhanced_create = [ea for ea in enhanced_activities if ea.activity_type == "create"]
+        enhanced_consume = [ea for ea in enhanced_activities if ea.activity_type == "consume"]
+
     # Compute creator metrics if there are creation activities
     creator_metrics = None
     if create_activities:
-        quality_score = quality_analyzer.compute(create_activities)
-        game_signature = game_analyzer.compute(create_activities)
+        # Use enhanced activities for aggregate game signature if available
+        if enhanced_create:
+            quality_score = _compute_avg_quality_from_enhanced(enhanced_create)
+            game_signature = _compute_aggregate_game_from_enhanced(enhanced_create)
+        else:
+            quality_score = quality_analyzer.compute(create_activities)
+            game_signature = game_analyzer.compute(create_activities)
+
         trajectory = trajectory_analyzer.compute(create_activities)
         impact_factor = impact_analyzer.compute(create_activities)
+
+        # For calibration, use enhanced activities if available
+        calibration_activities = enhanced_create if enhanced_create else create_activities
 
         creator_metrics = CreatorMetrics(
             quality_score=quality_score,
             game_alignment=_compute_game_alignment(game_signature),
             impact_factor=impact_factor,
-            calibration=_compute_calibration(create_activities),
+            calibration=_compute_calibration_from_enhanced(calibration_activities),
             game_signature=game_signature,
             trajectory=trajectory,
             total_outputs=len(create_activities),
@@ -417,13 +467,19 @@ def compute_profile(
     # Compute consumer metrics if there are consumption activities
     consumer_metrics = None
     if consume_activities:
-        consumption_games = game_analyzer.compute(consume_activities)
+        if enhanced_consume:
+            consumption_games = _compute_aggregate_game_from_enhanced(enhanced_consume)
+        else:
+            consumption_games = game_analyzer.compute(consume_activities)
         total_hours = sum((a.duration_seconds or 0) for a in consume_activities) / 3600.0
+
+        # For discernment, use enhanced activities if available
+        discernment_activities = enhanced_consume if enhanced_consume else consume_activities
 
         consumer_metrics = ConsumerMetrics(
             execution_rate=_compute_execution_rate(consume_activities),
             integration_skill=_compute_integration_skill(consume_activities),
-            discernment=_compute_discernment(consume_activities),
+            discernment=_compute_discernment_from_enhanced(discernment_activities),
             development=_compute_development_score(consume_activities),
             consumption_games=consumption_games,
             total_consumed=len(consume_activities),
@@ -678,3 +734,181 @@ def _compute_development_metrics(activities: list[Activity]) -> DevelopmentMetri
         platforms_active=len(platforms),
         achievements=[],  # Filled in later
     )
+
+
+# =============================================================================
+# Enhancement Layer Helpers
+# =============================================================================
+
+
+def _compute_and_store_enhancements(
+    activities: list[Activity],
+    quality_analyzer: "QualityAnalyzer",
+    game_analyzer: "GameAnalyzer",
+    store: "EnhancementStore",
+) -> None:
+    """Compute and store missing enhancements for activities.
+
+    Only computes enhancements for activities that don't already have
+    them stored, allowing for incremental processing.
+    """
+
+    # Find activities missing quality scores
+    missing_quality = store.get_unprocessed_activities(activities, "quality_scores")
+    if missing_quality:
+        quality_enhancements = quality_analyzer.compute_enhancements(missing_quality)
+        if quality_enhancements:
+            store.save_quality_scores(quality_enhancements, append=True)
+
+    # Find activities missing game signatures
+    missing_games = store.get_unprocessed_activities(activities, "game_signatures")
+    if missing_games:
+        game_enhancements = game_analyzer.compute_enhancements(missing_games)
+        if game_enhancements:
+            store.save_game_signatures(game_enhancements, append=True)
+
+
+def _compute_avg_quality_from_enhanced(
+    enhanced_activities: list["EnhancedActivity"],
+) -> float:
+    """Compute average quality score from enhanced activities."""
+    scores = [ea.quality_score for ea in enhanced_activities if ea.quality_score is not None]
+    if not scores:
+        return 0.0
+    return sum(scores) / len(scores)
+
+
+def _compute_aggregate_game_from_enhanced(
+    enhanced_activities: list["EnhancedActivity"],
+) -> GameSignature:
+    """Compute aggregate game signature from enhanced activities."""
+    signatures = [ea.game_signature for ea in enhanced_activities if ea.game_signature is not None]
+    if not signatures:
+        return GameSignature()
+
+    # Average the game scores
+    totals = {"G1": 0.0, "G2": 0.0, "G3": 0.0, "G4": 0.0, "G5": 0.0, "G6": 0.0}
+    for sig in signatures:
+        totals["G1"] += sig.G1
+        totals["G2"] += sig.G2
+        totals["G3"] += sig.G3
+        totals["G4"] += sig.G4
+        totals["G5"] += sig.G5
+        totals["G6"] += sig.G6
+
+    n = len(signatures)
+    return GameSignature(
+        G1=totals["G1"] / n,
+        G2=totals["G2"] / n,
+        G3=totals["G3"] / n,
+        G4=totals["G4"] / n,
+        G5=totals["G5"] / n,
+        G6=totals["G6"] / n,
+    )
+
+
+def _compute_calibration_from_enhanced(activities) -> float:
+    """Compute calibration score from activities (enhanced or regular).
+
+    Works with both EnhancedActivity and Activity objects.
+    """
+    quality_scores = []
+    for a in activities:
+        # Handle both EnhancedActivity and Activity
+        score = getattr(a, "quality_score", None)
+        if score is not None:
+            quality_scores.append(score)
+
+    if not quality_scores:
+        return 0.5
+
+    if len(quality_scores) == 1:
+        return quality_scores[0]
+
+    # Low variance = high calibration
+    mean = sum(quality_scores) / len(quality_scores)
+    variance = sum((s - mean) ** 2 for s in quality_scores) / len(quality_scores)
+
+    # Convert variance to calibration score (lower variance = higher calibration)
+    return max(0.0, min(1.0, 1.0 - variance * 2))
+
+
+def _compute_discernment_from_enhanced(activities) -> float:
+    """Compute discernment from activities (enhanced or regular).
+
+    Works with both EnhancedActivity and Activity objects.
+    """
+    quality_scores = []
+    for a in activities:
+        score = getattr(a, "quality_score", None)
+        if score is not None:
+            quality_scores.append(score)
+
+    if not quality_scores:
+        return 0.5
+
+    return sum(quality_scores) / len(quality_scores)
+
+
+def compute_and_store_enhancements(
+    repo_path: str,
+    force_recompute: bool = False,
+) -> dict:
+    """Compute and store all enhancements for a repository.
+
+    This is a standalone function for computing and storing enhancements
+    without computing the full profile. Useful for batch processing or
+    pre-computing enhancements.
+
+    Args:
+        repo_path: Path to MetaSPN repository
+        force_recompute: If True, clear existing enhancements and recompute all
+
+    Returns:
+        Dictionary with counts of computed enhancements
+
+    Example:
+        >>> result = compute_and_store_enhancements("./my-content")
+        >>> print(f"Computed {result['quality_scores']} quality scores")
+    """
+    from metaspn.analyzers.games import GameAnalyzer
+    from metaspn.analyzers.quality import QualityAnalyzer
+    from metaspn.repo.enhancement_store import EnhancementStore
+    from metaspn.repo.reader import load_activities
+    from metaspn.repo.structure import validate_repo
+
+    if not validate_repo(repo_path):
+        raise ValueError(f"Invalid MetaSPN repository at {repo_path}")
+
+    activities = load_activities(repo_path)
+    store = EnhancementStore(repo_path)
+
+    if force_recompute:
+        store.clear_enhancements()
+
+    quality_analyzer = QualityAnalyzer()
+    game_analyzer = GameAnalyzer()
+
+    # Compute quality scores
+    missing_quality = store.get_unprocessed_activities(activities, "quality_scores")
+    quality_count = 0
+    if missing_quality:
+        quality_enhancements = quality_analyzer.compute_enhancements(missing_quality)
+        if quality_enhancements:
+            store.save_quality_scores(quality_enhancements, append=not force_recompute)
+            quality_count = len(quality_enhancements)
+
+    # Compute game signatures
+    missing_games = store.get_unprocessed_activities(activities, "game_signatures")
+    game_count = 0
+    if missing_games:
+        game_enhancements = game_analyzer.compute_enhancements(missing_games)
+        if game_enhancements:
+            store.save_game_signatures(game_enhancements, append=not force_recompute)
+            game_count = len(game_enhancements)
+
+    return {
+        "quality_scores": quality_count,
+        "game_signatures": game_count,
+        "total_activities": len(activities),
+    }
