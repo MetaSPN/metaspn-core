@@ -75,7 +75,7 @@ User identity and basic metadata:
   "handle": "@leo_guinan",
   "avatar_url": "https://...",
   "created_at": "2024-01-28T12:00:00Z",
-  "version": "2.0.0"
+  "version": "0.1.0"
 }
 ```
 
@@ -85,7 +85,7 @@ Repository configuration:
 
 ```json
 {
-  "version": "2.0.0",
+  "version": "0.1.0",
   "source_platforms": ["podcasts", "books", "blogs", "twitter"],
   "artifact_platforms": ["twitter", "podcast", "blog", "youtube"],
   "created_at": "2024-01-28T12:00:00Z"
@@ -167,7 +167,7 @@ Master catalog of all activities:
 
 ```json
 {
-  "version": "2.0",
+  "version": "0.1",
   "last_updated": "2024-01-28T12:00:00Z",
   "total_activities": 42390,
   "activities": {

@@ -487,7 +487,7 @@ def init_repo(path: str, user_info: dict) -> None:
         "handle": user_info.get("handle", f"@{user_info['user_id']}"),
         "avatar_url": user_info.get("avatar_url"),
         "created_at": datetime.now().isoformat(),
-        "version": "2.0.0",  # Data lake version
+        "version": "0.1.0",
     }
 
     with open(structure.profile_path, "w") as f:
@@ -495,7 +495,7 @@ def init_repo(path: str, user_info: dict) -> None:
 
     # Create config.json
     config_data = {
-        "version": "2.0.0",
+        "version": "0.1.0",
         "source_platforms": ["podcasts", "books", "blogs", "twitter"],
         "artifact_platforms": ["twitter", "podcast", "blog", "youtube"],
         "created_at": datetime.now().isoformat(),

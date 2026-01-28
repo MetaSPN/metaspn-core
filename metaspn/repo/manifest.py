@@ -69,7 +69,7 @@ class ActivityIndex:
 class Manifest:
     """Master index of all activities for fast filtered loading."""
 
-    version: str = "2.0"
+    version: str = "0.1"
     last_updated: Optional[str] = None
     total_activities: int = 0
     activities: dict[str, ActivityIndex] = field(default_factory=dict)
@@ -90,7 +90,7 @@ class Manifest:
         """Deserialize from dictionary."""
         activities = {k: ActivityIndex.from_dict(v) for k, v in data.get("activities", {}).items()}
         return cls(
-            version=data.get("version", "2.0"),
+            version=data.get("version", "0.1"),
             last_updated=data.get("last_updated"),
             total_activities=data.get("total_activities", 0),
             activities=activities,

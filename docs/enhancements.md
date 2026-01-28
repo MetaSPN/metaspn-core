@@ -335,6 +335,7 @@ metaspn enhance ./my-content --archive-previous
 Include meaningful version numbers that reflect actual changes:
 - `1.0` → `1.1` for minor improvements
 - `1.0` → `2.0` for major algorithm changes
+- Use semantic versioning (major.minor.patch) for clarity
 
 ### 3. Document Archive Reasons
 

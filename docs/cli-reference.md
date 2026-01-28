@@ -508,7 +508,7 @@ Repository structure: OK
 Repository Info:
   User ID: leo_guinan
   Name: Leo Guinan
-  Version: 2.0.0
+  Version: 0.1.0
   Activity Files: 5
 
 Validation: PASSED

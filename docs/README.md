@@ -81,8 +81,8 @@ When building a tool that reads from a MetaSPN repository:
        print(f"{ea.activity_id}: quality={ea.quality_score}")
    ```
 
-## Version
+## Architecture
 
-This documentation describes the **v2.0 data lake architecture**.
+This documentation describes the current data lake architecture for MetaSPN repositories.
 
-Repositories using the legacy v1.0 structure (with `meta.json` at root) are still supported for reading but new repositories should use the v2.0 structure.
+Legacy repository layouts (with `meta.json` at root) are still supported for reading, but new repositories should use the standard structure described here.
